@@ -106,6 +106,7 @@ const PAGE_CLASS: Partial<Record<SettingsMenuKey, string>> = {
   integrations: "integration-settings-page",
   mcpServers: "mcp-settings-page",
   officePreview: "office-settings-page",
+  computerUse: "computer-use-page",
   privacy: "security-settings-page",
   advanced: "advanced-settings-page",
   about: "about-settings-page",
