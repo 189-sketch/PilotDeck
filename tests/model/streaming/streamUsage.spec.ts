@@ -5,9 +5,9 @@ import { parseModelConfig } from '../../../src/model/config/parseModelConfig.js'
 import type { CanonicalModelEvent } from '../../../src/model/protocol/canonical.js';
 
 const request = { provider: 'test', model: 'model', messages: [{ role: 'user' as const, content: [{ type: 'text' as const, text: 'hello' }] }] };
-function config(extraBody?: Record<string, unknown>) {
+function config(extraBody?: Record<string, unknown>, url = 'https://example.test/v1') {
   return parseModelConfig({ providers: { test: {
-    protocol: 'openai', url: 'https://example.test/v1', apiKey: 'fixture',
+    protocol: 'openai', url, apiKey: 'fixture',
     retry: { streamMaxRetries: 0 }, extraBody, models: { model: {} },
   } } });
 }
@@ -41,12 +41,19 @@ test('OpenAI stream requests ask for usage and parse the trailing empty-choices 
   assert.equal(events.find(event => event.type === 'usage')?.usage.totalTokens, 120);
 });
 
-for (const status of [400, 422]) {
-  test(`an explicit unsupported stream_options error (${status}) falls back without breaking the conversation`, async () => {
+const compatibilityCases = [400, 422].flatMap(status =>
+  ['https://example.test/v1', 'https://example.test'].map(baseUrl => ({ status, baseUrl })));
+for (const { status, baseUrl } of compatibilityCases) {
+  test(`an unsupported stream_options error (${status}, base ${baseUrl}) retries the same endpoint`, async () => {
     const bodies: Record<string, unknown>[] = [];
-    const runtime = createModelRuntime(config(), { fetch: async (_url, init) => {
+    const urls: string[] = [];
+    const runtime = createModelRuntime(config(undefined, baseUrl), { fetch: async (url, init) => {
       const body = JSON.parse(String(init?.body));
       bodies.push(body);
+      urls.push(String(url));
+      if (String(url) !== 'https://example.test/v1/chat/completions') {
+        return new Response(JSON.stringify({ error: { message: 'Not found' } }), { status: 404 });
+      }
       if (body.stream_options) {
         return new Response(JSON.stringify({ error: { message: "Unknown parameter: 'stream_options'" } }), { status });
       }
@@ -54,6 +61,7 @@ for (const status of [400, 422]) {
     } });
     const events = await collect(runtime.stream(request));
     assert.equal(bodies.length, 2);
+    assert.deepEqual(urls, ['https://example.test/v1/chat/completions', 'https://example.test/v1/chat/completions']);
     assert.deepEqual(bodies[0].stream_options, { include_usage: true });
     assert.equal(bodies[1].stream_options, undefined);
     assert.deepEqual(bodies[1], Object.fromEntries(Object.entries(bodies[0]).filter(([key]) => key !== 'stream_options')));
@@ -62,6 +70,29 @@ for (const status of [400, 422]) {
     assert.equal(events.some(event => event.type === 'usage'), false);
   });
 }
+
+test('endpoint discovery still works when the second address requires a usage-option retry', async () => {
+  const calls: { url: string; usage: boolean }[] = [];
+  const runtime = createModelRuntime(config(undefined, 'https://example.test'), { fetch: async (url, init) => {
+    const body = JSON.parse(String(init?.body));
+    calls.push({ url: String(url), usage: body.stream_options?.include_usage === true });
+    if (String(url) === 'https://example.test/v1/chat/completions') {
+      return new Response(JSON.stringify({ error: { message: 'Not found' } }), { status: 404 });
+    }
+    if (body.stream_options) {
+      return new Response(JSON.stringify({ error: { message: "Unknown parameter: 'stream_options'" } }), { status: 400 });
+    }
+    return completedStream();
+  } });
+  const events = await collect(runtime.stream(request));
+  assert.deepEqual(calls, [
+    { url: 'https://example.test/v1/chat/completions', usage: true },
+    { url: 'https://example.test/chat/completions', usage: true },
+    { url: 'https://example.test/chat/completions', usage: false },
+  ]);
+  assert.equal(events.some(event => event.type === 'error'), false);
+  assert.ok(events.some(event => event.type === 'text_delta' && event.text === 'hello'));
+});
 
 test('unrelated bad requests are not retried as a usage compatibility fallback', async () => {
   let calls = 0;

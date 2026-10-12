@@ -701,17 +701,13 @@ async function sendProviderRequest(
       body: JSON.stringify(finalBody),
       signal: controller.signal,
     };
-    let response = await sendWithEndpointFallback(provider, stream, transport, fetchOptions, effectiveTimeoutMs);
+    let usageFallbackBody: string | undefined;
     if (provider.protocol === "openai" && stream && finalBody.stream_options !== undefined
-      && provider.extraBody?.stream_options === undefined && await rejectsStreamUsageOption(response)) {
-      // Some compatible providers reject the optional usage parameter. Only
-      // retry an explicit setup rejection; never replay an accepted stream.
+      && provider.extraBody?.stream_options === undefined) {
       const { stream_options: _usageOptions, ...fallbackBody } = finalBody;
-      response = await sendWithEndpointFallback(provider, stream, transport, {
-        ...fetchOptions, body: JSON.stringify(fallbackBody),
-      }, effectiveTimeoutMs);
+      usageFallbackBody = JSON.stringify(fallbackBody);
     }
-    return response;
+    return await sendWithEndpointFallback(provider, stream, transport, fetchOptions, effectiveTimeoutMs, usageFallbackBody);
   } catch (error) {
     if (signal?.aborted) {
       throw createAbortError(signal.reason);
@@ -750,16 +746,23 @@ async function sendWithEndpointFallback(
   transport: ModelTransport,
   fetchOptions: RequestInit,
   timeoutMs: number,
+  usageFallbackBody?: string,
 ): Promise<Response> {
   const endpoints = buildProviderChatEndpointCandidates({ protocol: provider.protocol, baseUrl: provider.url });
+  const networkOptions = {
+    signal: fetchOptions.signal instanceof AbortSignal ? fetchOptions.signal : undefined,
+    fetchImpl: transport === fetch ? undefined : transport,
+    timeoutMs,
+    retry: { maxRetries: 0, retryOnPost: true },
+  };
   let lastResponse: Response | undefined;
   for (const endpoint of endpoints) {
-    const response = await networkFetch(endpoint, fetchOptions, {
-      signal: fetchOptions.signal instanceof AbortSignal ? fetchOptions.signal : undefined,
-      fetchImpl: transport === fetch ? undefined : transport,
-      timeoutMs,
-      retry: { maxRetries: 0, retryOnPost: true },
-    });
+    let response = await networkFetch(endpoint, fetchOptions, networkOptions);
+    if (usageFallbackBody !== undefined && await rejectsStreamUsageOption(response)) {
+      // Retry an explicit parameter rejection at this endpoint before trying
+      // another address, which could otherwise hide the rejection with a 404.
+      response = await networkFetch(endpoint, { ...fetchOptions, body: usageFallbackBody }, networkOptions);
+    }
     if (await shouldUseEndpointResponse(provider, response, stream, endpoints.length)) {
       return response;
     }
