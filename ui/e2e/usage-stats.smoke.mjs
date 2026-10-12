@@ -44,7 +44,7 @@ try {
   await page.goto(`${baseUrl}/settings/usage`);
   await expect(page.locator('.usage-stat-today strong')).toHaveAttribute('title', '65,600');
   await expect(page.locator('.usage-heatmap button')).toHaveCount(365);
-  await expect(page.locator('.usage-day-detail')).toContainText('65,600');
+  await expect(page.locator('.usage-day-detail')).toHaveCount(0);
   const menu = (await page.locator('.settings-sidebar .nav-item').allTextContents()).map(text => text.trim());
   expect(menu.indexOf('用量统计')).toBe(menu.indexOf('模型池') + 1);
   await page.screenshot({ path: join(output, 'usage-light.png'), fullPage: true });
@@ -74,11 +74,13 @@ try {
   await page.setViewportSize({ width: 1920, height: 900 });
   await page.reload();
   await expect(page.locator('.usage-stat-today strong')).toHaveAttribute('title', '0');
-  await expect(page.locator('.usage-empty-note')).toBeVisible();
+  await expect(page.locator('.usage-empty-note, .usage-footnote, .usage-header p')).toHaveCount(0);
   await expect(page.locator('.usage-day-detail')).toHaveCount(0);
   const plot = await page.locator('.usage-heatmap').boundingBox();
   const content = await page.locator('.usage-content').boundingBox();
-  expect(content.width).toBeLessThanOrEqual(1100);
+  expect(content.width).toBeLessThanOrEqual(760);
+  const stats = await page.locator('.usage-summary').boundingBox();
+  expect(stats.height).toBeLessThanOrEqual(90);
   expect(plot.width / content.width).toBeGreaterThan(0.95);
   await page.screenshot({ path: join(output, 'usage-wide-empty.png'), fullPage: true });
   expect(errors).toEqual([]);
