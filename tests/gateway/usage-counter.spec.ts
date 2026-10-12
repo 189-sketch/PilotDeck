@@ -5,9 +5,9 @@ import { setTimeout } from 'node:timers/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createLocalGateway } from '../../src/cli/createLocalGateway.js';
-import { createModelRuntime, type CanonicalModelEvent } from '../../src/model/index.js';
+import { createModelRuntime } from '../../src/model/index.js';
 
-test('gateway records main and title calls with routing disabled, without extra requests', async t => {
+test('gateway records OpenAI stream usage but excludes a successful title call with routing disabled', async t => {
   const home = await mkdtemp(join(tmpdir(), 'gateway-usage-'));
   await mkdir(join(home, 'skills'));
   await writeFile(join(home, 'pilotdeck.yaml'), `
@@ -32,21 +32,30 @@ extension:
     pilotHome: home, projectRoot: home, builtinSkillsRoot: join(home, 'skills'),
     env: { ...process.env, PILOT_HOME: home, PILOTDECK_CONFIG_PATH: join(home, 'pilotdeck.yaml'), PILOT_AGENT_MODEL: undefined },
     __testModelFactory(snapshot) {
-      return {
-        ...createModelRuntime(snapshot.config.model),
-        async *stream(): AsyncIterable<CanonicalModelEvent> {
-          streams++;
-          yield { type: 'message_start', role: 'assistant' };
-          yield { type: 'text_delta', text: 'hello' };
-          yield { type: 'usage', usage: { inputTokens: 100, outputTokens: 20, totalTokens: 120 } };
-          yield { type: 'message_end', finishReason: 'stop' };
-        },
-        async complete(request) {
-          assert.equal(request.metadata?.purpose, 'session_title_generation');
+      return createModelRuntime(snapshot.config.model, {
+        async fetch(_url, init) {
+          const body = JSON.parse(String(init?.body));
+          if (body.stream) {
+            streams++;
+            // Like the official protocol, only return usage when requested.
+            const chunks = [
+              { choices: [{ delta: { role: 'assistant', content: 'hello' }, finish_reason: null }], usage: null },
+              { choices: [{ delta: {}, finish_reason: 'stop' }], usage: null },
+              ...(body.stream_options?.include_usage ? [{ choices: [], usage: { prompt_tokens: 100, completion_tokens: 20, total_tokens: 120 } }] : []),
+            ];
+            return new Response(chunks.map(chunk => `data: ${JSON.stringify(chunk)}\n\n`).join('') + 'data: [DONE]\n\n', {
+              headers: { 'content-type': 'text/event-stream' },
+            });
+          }
+          assert.equal(body.metadata?.purpose, 'session_title_generation');
+          assert.equal(body.stream_options, undefined);
           titles++;
-          return { role: 'assistant', content: [{ type: 'text', text: '{"title":"Usage test"}' }], finishReason: 'stop', usage: { totalTokens: 5 } };
+          return new Response(JSON.stringify({
+            choices: [{ message: { role: 'assistant', content: '{"title":"Usage test"}' }, finish_reason: 'stop' }],
+            usage: { prompt_tokens: 3, completion_tokens: 2, total_tokens: 5 },
+          }), { headers: { 'content-type': 'application/json' } });
         },
-      };
+      });
     },
   });
   t.after(async () => { local.dispose(); await rm(home, { recursive: true, force: true }); });
@@ -64,10 +73,10 @@ extension:
       records = (await Promise.all(files.map(file => readFile(join(dir, file), 'utf8')))).join('').trim().split('\n').map(Number);
     }
     catch { /* asynchronous counter may not have flushed yet */ }
-    if (records.length === 2) break;
+    if (records.length === 1 && titles === 1) break;
     await setTimeout(10);
   }
   assert.equal(streams, 1);
   assert.equal(titles, 1);
-  assert.deepEqual(records.sort((a, b) => a - b), [5, 120]);
+  assert.deepEqual(records, [120]);
 });

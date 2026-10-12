@@ -701,7 +701,17 @@ async function sendProviderRequest(
       body: JSON.stringify(finalBody),
       signal: controller.signal,
     };
-    return await sendWithEndpointFallback(provider, stream, transport, fetchOptions, effectiveTimeoutMs);
+    let response = await sendWithEndpointFallback(provider, stream, transport, fetchOptions, effectiveTimeoutMs);
+    if (provider.protocol === "openai" && stream && finalBody.stream_options !== undefined
+      && provider.extraBody?.stream_options === undefined && await rejectsStreamUsageOption(response)) {
+      // Some compatible providers reject the optional usage parameter. Only
+      // retry an explicit setup rejection; never replay an accepted stream.
+      const { stream_options: _usageOptions, ...fallbackBody } = finalBody;
+      response = await sendWithEndpointFallback(provider, stream, transport, {
+        ...fetchOptions, body: JSON.stringify(fallbackBody),
+      }, effectiveTimeoutMs);
+    }
+    return response;
   } catch (error) {
     if (signal?.aborted) {
       throw createAbortError(signal.reason);
@@ -713,6 +723,14 @@ async function sendProviderRequest(
     }
     detachAbort?.();
   }
+}
+
+async function rejectsStreamUsageOption(response: Response): Promise<boolean> {
+  if (response.status !== 400 && response.status !== 422) return false;
+  const raw = await safeReadJson(response.clone());
+  const text = typeof raw === "string" ? raw : JSON.stringify(raw);
+  return /\b(stream_options|include_usage)\b/i.test(text)
+    && /\b(unknown|unrecognized|unexpected|unsupported)\b|not\s+(supported|allowed|permitted)|extra_forbidden/i.test(text);
 }
 
 function forwardAbort(source: AbortSignal, target: AbortController): () => void {

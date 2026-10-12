@@ -50,6 +50,44 @@ test('stream forwards identical events and records the latest usage once', async
   seen.forEach((event, i) => assert.equal(event, events[i]));
 });
 
+test('title generation still executes and forwards results without adding usage', async () => {
+  const events: CanonicalModelEvent[] = [{ type: 'usage', usage: { totalTokens: 5 } }];
+  const response: CanonicalModelResponse = { role: 'assistant', content: [], finishReason: 'stop', usage: { totalTokens: 5 } };
+  const base = model(events, response);
+  const title = { ...request, metadata: { purpose: 'session_title_generation' } };
+  const options = { signal: new AbortController().signal };
+  let completions = 0;
+  let streams = 0;
+  base.complete = async (input, callOptions) => {
+    assert.equal(input, title); assert.equal(callOptions, options);
+    completions++;
+    return response;
+  };
+  base.stream = async function* (input, callOptions) {
+    assert.equal(input, title); assert.equal(callOptions, options);
+    streams++;
+    yield* events;
+  };
+  const tokens: number[] = [];
+  const wrapped = withUsageCounter(base, { record: n => { tokens.push(n); } });
+  assert.equal(await wrapped.complete(title, options), response);
+  const seen: CanonicalModelEvent[] = [];
+  for await (const event of wrapped.stream(title, options)) seen.push(event);
+  assert.equal(completions, 1);
+  assert.equal(streams, 1);
+  assert.equal(seen[0], events[0]);
+  assert.deepEqual(tokens, []);
+});
+
+test('non-title completion calls remain counted, including routing judgments', async () => {
+  const response: CanonicalModelResponse = { role: 'assistant', content: [], finishReason: 'stop', usage: { totalTokens: 12 } };
+  const tokens: number[] = [];
+  const wrapped = withUsageCounter(model([], response), { record: n => { tokens.push(n); } });
+  assert.equal(await wrapped.complete(request), response);
+  assert.equal(await wrapped.complete({ ...request, metadata: { purpose: 'other' } }), response);
+  assert.deepEqual(tokens, [12, 12]);
+});
+
 test('Anthropic input/cache and output reports combine without changing usage events', async () => {
   const events: CanonicalModelEvent[] = [
     { type: 'message_start', role: 'assistant', raw: { message: { usage: { input_tokens: 10, cache_read_input_tokens: 20, cache_creation_input_tokens: 5 } } } },

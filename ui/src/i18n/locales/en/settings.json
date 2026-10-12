@@ -1863,7 +1863,7 @@
     "timeZoneShort": "Beijing time",
     "autoRefresh": "Updates every 30 seconds",
     "updatedShort": "Updated {{time}}",
-    "scope": "Counts the token usage reported by model calls in this PilotDeck instance. Calls without reported usage are excluded. Updates after a call finishes.",
+    "scope": "Counts reported token usage from conversations, routing, subagents, and context compaction. Memory and title generation are excluded, as are calls without reported usage.",
     "since": "Recorded since {{date}}. Earlier unrecorded usage is not included.",
     "empty": "No usage yet. Usage will appear here after your first conversation.",
     "updated": "Updated {{time}} · refreshes every 30 seconds"

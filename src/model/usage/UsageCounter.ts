@@ -45,7 +45,7 @@ function reportedTokens(usage: CanonicalUsage | undefined, anthropic = false): n
   return values.length ? values.reduce((sum, value) => sum + value, 0) : undefined;
 }
 
-/** Observe usage without changing requests, events, cancellation or model errors. */
+/** Count conversation usage, excluding titles, without changing model execution. */
 export function withUsageCounter(model: ModelRuntime, counter: Pick<UsageCounter, "record">): ModelRuntime {
   const record = (usage: CanonicalUsage | undefined, anthropic = false) => {
     try {
@@ -57,10 +57,14 @@ export function withUsageCounter(model: ModelRuntime, counter: Pick<UsageCounter
     ...model,
     async complete(request, options) {
       const response = await model.complete(request, options);
-      record(response.usage);
+      if (request.metadata?.purpose !== "session_title_generation") record(response.usage);
       return response;
     },
     async *stream(request, options) {
+      if (request.metadata?.purpose === "session_title_generation") {
+        yield* model.stream(request, options);
+        return;
+      }
       let usage: CanonicalUsage | undefined;
       let anthropic = false;
       try { anthropic = model.getProviderProtocol(request.provider) === "anthropic"; } catch { /* optional metadata */ }
