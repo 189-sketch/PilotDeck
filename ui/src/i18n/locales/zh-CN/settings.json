@@ -1848,10 +1848,13 @@
     "less": "少",
     "more": "多",
     "dayDetail": "{{date}} · {{tokens}} Token · {{count}} 次调用",
-    "calls": "{{count}} 次已返回用量的调用",
+    "calls": "{{count}} 次调用",
+    "timeZoneShort": "北京时间",
+    "autoRefresh": "每 30 秒更新",
+    "updatedShort": "更新于 {{time}}",
     "scope": "统计当前 PilotDeck 实例中模型调用返回的 Token 用量，未返回用量的调用不计入。调用结束后更新。",
     "since": "从 {{date}} 开始记录，此前未记录的用量不包含在内。",
-    "empty": "暂无用量记录，下一次模型调用返回用量后将显示在这里。",
+    "empty": "暂无用量记录，完成一次对话后，用量将显示在这里。",
     "updated": "更新于 {{time}} · 每 30 秒自动刷新"
   }
 }

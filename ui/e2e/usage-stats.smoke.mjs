@@ -69,6 +69,18 @@ try {
   expect(summary.x + summary.width).toBeLessThanOrEqual(390);
   await page.screenshot({ path: join(output, 'usage-mobile.png'), fullPage: true });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  usage = { ...usage, days: [], totalTokens: 0, totalCalls: 0 };
+  await page.evaluate(() => { localStorage.setItem('themeMode', 'light'); localStorage.setItem('theme', 'light'); });
+  await page.setViewportSize({ width: 1920, height: 900 });
+  await page.reload();
+  await expect(page.locator('.usage-stat-today strong')).toHaveAttribute('title', '0');
+  await expect(page.locator('.usage-empty-note')).toBeVisible();
+  await expect(page.locator('.usage-day-detail')).toHaveCount(0);
+  const plot = await page.locator('.usage-heatmap').boundingBox();
+  const content = await page.locator('.usage-content').boundingBox();
+  expect(content.width).toBeLessThanOrEqual(1100);
+  expect(plot.width / content.width).toBeGreaterThan(0.95);
+  await page.screenshot({ path: join(output, 'usage-wide-empty.png'), fullPage: true });
   expect(errors).toEqual([]);
-  console.log(JSON.stringify({ passed: true, output, checked: ['navigation', '365 days', 'day selection', 'error recovery', 'refresh', 'light', 'dark', 'mobile'] }));
+  console.log(JSON.stringify({ passed: true, output, checked: ['navigation', '365 days', 'day selection', 'error recovery', 'refresh', 'light', 'dark', 'mobile', 'wide empty state', 'heatmap fills width'] }));
 } finally { await browser.close(); }

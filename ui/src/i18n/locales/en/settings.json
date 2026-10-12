@@ -1854,11 +1854,14 @@
     "less": "Less",
     "more": "More",
     "dayDetail": "{{date}} · {{tokens}} tokens · {{count}} calls",
-    "calls_one": "{{count}} reported call",
-    "calls_other": "{{count}} reported calls",
+    "calls_one": "{{count}} call",
+    "calls_other": "{{count}} calls",
+    "timeZoneShort": "Beijing time",
+    "autoRefresh": "Updates every 30 seconds",
+    "updatedShort": "Updated {{time}}",
     "scope": "Counts the token usage reported by model calls in this PilotDeck instance. Calls without reported usage are excluded. Updates after a call finishes.",
     "since": "Recorded since {{date}}. Earlier unrecorded usage is not included.",
-    "empty": "No usage recorded yet. Your next model call with reported usage will appear here.",
+    "empty": "No usage yet. Usage will appear here after your first conversation.",
     "updated": "Updated {{time}} · refreshes every 30 seconds"
   }
 }

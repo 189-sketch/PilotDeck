@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { RefreshCw } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { Info, RefreshCw } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { authenticatedFetch } from '../../../../utils/api';
 import { heatmapDates, usageMetrics, type UsageStats } from './metrics';
@@ -51,6 +51,8 @@ export default function UsageSections() {
   const selected = selectedDate ?? data?.today;
   const selectedDay = selected ? dayMap.get(selected) : undefined;
   const peak = metrics?.peakTokens ?? 0;
+  const todayCalls = data ? dayMap.get(data.today)?.callCount ?? 0 : 0;
+  const updateTime = data ? new Intl.DateTimeFormat(locale, { timeZone: data.timeZone, hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(data.updatedAt)) : '';
   const cards = metrics && data ? [
     { key: 'today', label: t('usage.today'), value: metrics.todayTokens, unit: 'Token' },
     { key: 'total', label: t('usage.total'), value: data.totalTokens, unit: 'Token' },
@@ -61,32 +63,38 @@ export default function UsageSections() {
 
   return (
     <div className="usage-content">
-      <div className="usage-toolbar">
-        <span>{t('usage.timeZone')}</span>
+      <header className="usage-header">
+        <div>
+          <h1>{t('settingsPage.menu.usage')}</h1>
+          <p>{t('settingsPage.descriptions.usage')}</p>
+        </div>
         <button type="button" className="usage-refresh" onClick={() => void refresh()} disabled={loading}>
           <RefreshCw size={14} className={loading ? 'usage-spin' : undefined} />
           {t('usage.refresh')}
         </button>
-      </div>
+      </header>
       {error ? <div className="usage-error" role="alert">{t('usage.error')}</div> : null}
       {!data ? <div className="usage-loading" role="status">{loading ? t('usage.loading') : t('usage.unavailable')}</div> : (
         <>
-          <div className="usage-summary">
+          <section className="usage-summary" aria-label={t('settingsPage.menu.usage')}>
             {cards.map(card => (
               <div key={card.key} className={`usage-stat usage-stat-${card.key}`}>
                 <span className="usage-stat-label">{card.label}</span>
-                <strong title={fullNumber.format(card.value)}>{shortNumber.format(card.value)}</strong>
-                <span className="usage-stat-unit">{card.unit}</span>
+                <div className="usage-stat-value">
+                  <strong title={fullNumber.format(card.value)}>{shortNumber.format(card.value)}</strong>
+                  {card.key === 'today' || card.unit !== 'Token' ? <span className="usage-stat-unit">{card.unit}</span> : null}
+                </div>
+                {card.key === 'today' ? <span className="usage-today-calls">{t('usage.calls', { count: todayCalls })}</span> : null}
               </div>
             ))}
-          </div>
+          </section>
           <section className="usage-activity">
             <div className="usage-section-heading">
               <h2>{t('usage.activity')}</h2>
-              <span>{t('usage.lastYear')}</span>
+              <span className="usage-range">{t('usage.lastYear')}</span>
             </div>
             <div className="usage-heatmap-scroll">
-              <div className="usage-heatmap-layout">
+              <div className="usage-heatmap-layout" style={{ '--usage-weeks': Math.ceil(dates.length / 7) } as CSSProperties}>
                 <div className="usage-months" aria-hidden="true">
                   {Array.from({ length: Math.ceil(dates.length / 7) }, (_, week) => {
                     const weekDates = dates.slice(week * 7, week * 7 + 7).filter((date): date is string => date !== null);
@@ -105,7 +113,7 @@ export default function UsageSections() {
                     const level = tokens > 0 && peak > 0 ? Math.min(4, Math.max(1, Math.ceil(Math.sqrt(tokens / peak) * 4))) : 0;
                     const label = t('usage.dayDetail', { date, tokens: fullNumber.format(tokens), count: day?.callCount ?? 0 });
                     return <button key={date} type="button" className={`usage-cell usage-level-${level}`} aria-label={label} title={label}
-                      aria-pressed={date === selected} onClick={() => setSelectedDate(date)} />;
+                      aria-pressed={selectedDate !== null && date === selected} onClick={() => setSelectedDate(date)} />;
                   })}
                 </div>
               </div>
@@ -113,16 +121,19 @@ export default function UsageSections() {
             <div className="usage-legend" aria-hidden="true">
               <span>{t('usage.less')}</span>{[0, 1, 2, 3, 4].map(level => <span key={level} className={`usage-cell usage-level-${level}`} />)}<span>{t('usage.more')}</span>
             </div>
-            <div className="usage-day-detail" aria-live="polite">
-              <span>{selected}</span>
-              <strong>{fullNumber.format(selectedDay?.tokens ?? 0)} <span>Token</span></strong>
-              <span>{t('usage.calls', { count: selectedDay?.callCount ?? 0 })}</span>
-            </div>
+            {data.days.length ? (
+              <div className="usage-day-detail" aria-live="polite">
+                <div><span>{selected}</span><strong>{fullNumber.format(selectedDay?.tokens ?? 0)} <span>Token</span></strong></div>
+                <span>{t('usage.calls', { count: selectedDay?.callCount ?? 0 })}</span>
+              </div>
+            ) : <p className="usage-empty-note">{t('usage.empty')}</p>}
           </section>
           <div className="usage-footnote">
-            <p>{t('usage.scope')}</p>
-            <p>{data.days.length ? t('usage.since', { date: data.days[0].date }) : t('usage.empty')}</p>
-            <p>{t('usage.updated', { time: new Intl.DateTimeFormat(locale, { timeZone: data.timeZone, hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }).format(new Date(data.updatedAt)) })}</p>
+            <div>
+              <span>{t('usage.timeZoneShort')}</span><span className="usage-footer-dot">·</span><span>{t('usage.autoRefresh')}</span>
+              <span className="usage-scope" tabIndex={0} title={`${t('usage.scope')}${data.days.length ? ` ${t('usage.since', { date: data.days[0].date })}` : ''}`} aria-label={t('usage.scope')}><Info size={13} /></span>
+            </div>
+            <span>{t('usage.updatedShort', { time: updateTime })}</span>
           </div>
         </>
       )}
