@@ -37,6 +37,8 @@ export type PilotDeckServer = GatewayServer & {
    * Stops any previously running instance of the same channelKey first.
    */
   hotStartChannel(channel: ChannelAdapter): Promise<void>;
+  /** Stop a running channel (e.g. after it was disabled in config). No-op if not running. */
+  stopChannel(channelKey: string, reason?: string): Promise<void>;
   deliverCronResult(delivery: CronResultDelivery): Promise<boolean>;
 };
 
@@ -122,6 +124,20 @@ export async function startPilotDeckServer(options: StartPilotDeckServerOptions)
     hotStartChannel(channel: ChannelAdapter) {
       void startChannelInBackground(channel);
       return Promise.resolve();
+    },
+    async stopChannel(channelKey: string, reason = "disabled") {
+      await channelStarts.get(channelKey)?.catch(() => undefined);
+      const handle = runningHandles.get(channelKey);
+      if (!handle) return;
+      runningHandles.delete(channelKey);
+      runningChannels.delete(channelKey);
+      await handle.stop(reason).catch((e: unknown) => {
+        consoleLogger.warn(`[adapters] channel ${channelKey} stop failed: ${e instanceof Error ? e.message : String(e)}`);
+      });
+      reportChannelStatus(channelKey as ChannelAdapter["channelKey"], {
+        state: "stopped",
+        message: `${channelKey}: stopped (${reason})`,
+      });
     },
     async deliverCronResult(delivery: CronResultDelivery) {
       const channel = runningChannels.get(delivery.originChannelKey ?? delivery.channelKey);

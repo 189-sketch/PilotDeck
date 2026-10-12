@@ -255,6 +255,8 @@ async function main(argv = process.argv.slice(2)): Promise<void> {
     // --- Adapter hot-reload ---
 
     let serverRef: Awaited<ReturnType<typeof startPilotDeckServer>> | undefined;
+    /** Channels started via loadEnabledChannels (Slack, Telegram, …), so hot reload can stop disabled ones. */
+    let runningExtraChannelKeys = new Set<string>();
 
     async function hotStartWeixinChannel(): Promise<void> {
       if (!serverRef) return;
@@ -321,6 +323,13 @@ async function main(argv = process.argv.slice(2)): Promise<void> {
       }
 
       const extraChannels = await loadEnabledChannels(config.adapters, { pilotHome });
+      const nextExtraKeys = new Set<string>(extraChannels.map((ch) => ch.channelKey));
+      for (const key of runningExtraChannelKeys) {
+        if (nextExtraKeys.has(key)) continue;
+        await serverRef.stopChannel(key, "disabled");
+        parts.push(`${key}=stopped`);
+      }
+      runningExtraChannelKeys = nextExtraKeys;
       for (const ch of extraChannels) {
         await serverRef.hotStartChannel(ch);
         parts.push(`${ch.channelKey}=started`);
@@ -335,6 +344,7 @@ async function main(argv = process.argv.slice(2)): Promise<void> {
 
     const envPort = Number.parseInt(env.PILOTDECK_GATEWAY_PORT ?? "", 10);
     const extraChannels = await loadEnabledChannels(snapshot.config.adapters, { pilotHome });
+    runningExtraChannelKeys = new Set<string>(extraChannels.map((ch) => ch.channelKey));
     const feishuCfg = snapshot.config.adapters?.feishu;
     const savedFeishuState = await channelStatePersistence.load<FeishuSessionMapperState>("feishu");
     const feishuChannel = feishuCfg?.enabled === true
