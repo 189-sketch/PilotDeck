@@ -44,8 +44,8 @@ export interface BashCommandList {
 }
 
 /**
- * Splits `command` into its simple commands, mirroring opencode's shell tool
- * (`commands()` + `source()`). Returns undefined when the parser is not loaded.
+ * Splits `command` into its simple commands, like opencode's `scanLegacy` in
+ * `packages/core/src/shell/parse.ts`. Returns undefined when the parser is not loaded.
  */
 export function splitBashCommands(command: string): BashCommandList | undefined {
   const tree = parseBash(command);
