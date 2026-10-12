@@ -44,6 +44,8 @@ try {
   await page.goto(`${baseUrl}/settings/usage`);
   await expect(page.locator('.usage-stat-today strong')).toHaveAttribute('title', '65,600');
   await expect(page.locator('.usage-heatmap button')).toHaveCount(365);
+  await expect(page.locator('.usage-heatmap button[aria-label^="2026-10-12"]')).toHaveClass(/usage-level-1/);
+  await expect(page.locator('.usage-legend .usage-level-4')).toHaveAttribute('title', '3亿 Token 及以上');
   await expect(page.locator('.usage-day-detail')).toHaveCount(0);
   const menu = (await page.locator('.settings-sidebar .nav-item').allTextContents()).map(text => text.trim());
   expect(menu.indexOf('用量统计')).toBe(menu.indexOf('模型池') + 1);

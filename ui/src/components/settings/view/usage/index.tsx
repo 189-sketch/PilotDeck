@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties }
 import { RefreshCw } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { authenticatedFetch } from '../../../../utils/api';
-import { heatmapDates, usageMetrics, type UsageStats } from './metrics';
+import { heatmapDates, usageLevel, usageMetrics, USAGE_THRESHOLDS, type UsageStats } from './metrics';
 import './usage.css';
 
 export default function UsageSections() {
@@ -50,7 +50,15 @@ export default function UsageSections() {
   const dayMap = new Map(data?.days.map(day => [day.date, day]) ?? []);
   const selected = selectedDate ?? data?.today;
   const selectedDay = selected ? dayMap.get(selected) : undefined;
-  const peak = metrics?.peakTokens ?? 0;
+  const legendTitle = (level: number) => {
+    if (level === 0) return t('usage.legendZero');
+    if (level === 1) return t('usage.legendBelow', { max: shortNumber.format(USAGE_THRESHOLDS[0]) });
+    if (level === 4) return t('usage.legendAtLeast', { min: shortNumber.format(USAGE_THRESHOLDS[2]) });
+    return t('usage.legendRange', {
+      min: shortNumber.format(USAGE_THRESHOLDS[level - 2]),
+      max: shortNumber.format(USAGE_THRESHOLDS[level - 1]),
+    });
+  };
   const cards = metrics && data ? [
     { key: 'today', label: t('usage.today'), value: metrics.todayTokens, unit: 'Token' },
     { key: 'total', label: t('usage.total'), value: data.totalTokens, unit: 'Token' },
@@ -101,7 +109,7 @@ export default function UsageSections() {
                     if (!date) return <span key={`empty-${index}`} className="usage-cell usage-cell-placeholder" />;
                     const day = dayMap.get(date);
                     const tokens = day?.tokens ?? 0;
-                    const level = tokens > 0 && peak > 0 ? Math.min(4, Math.max(1, Math.ceil(Math.sqrt(tokens / peak) * 4))) : 0;
+                    const level = usageLevel(tokens);
                     const label = t('usage.dayDetail', { date, tokens: fullNumber.format(tokens), count: day?.callCount ?? 0 });
                     return <button key={date} type="button" className={`usage-cell usage-level-${level}`} aria-label={label} title={label}
                       aria-pressed={selectedDate !== null && date === selected} onClick={() => setSelectedDate(date)} />;
@@ -110,7 +118,7 @@ export default function UsageSections() {
               </div>
             </div>
             <div className="usage-legend" aria-hidden="true">
-              <span>{t('usage.less')}</span>{[0, 1, 2, 3, 4].map(level => <span key={level} className={`usage-cell usage-level-${level}`} />)}<span>{t('usage.more')}</span>
+              <span>{t('usage.less')}</span>{[0, 1, 2, 3, 4].map(level => <span key={level} className={`usage-cell usage-level-${level}`} title={legendTitle(level)} />)}<span>{t('usage.more')}</span>
             </div>
             {selectedDate ? (
               <div className="usage-day-detail" aria-live="polite">

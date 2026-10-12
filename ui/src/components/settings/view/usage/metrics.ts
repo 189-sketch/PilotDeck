@@ -9,6 +9,14 @@ export type UsageStats = {
 };
 
 const DAY_MS = 86_400_000;
+
+/** Fixed daily-token bands keep the same usage the same shade across history. */
+export const USAGE_THRESHOLDS = [10_000_000, 100_000_000, 300_000_000] as const;
+export function usageLevel(tokens: number): number {
+  if (!Number.isFinite(tokens) || tokens <= 0) return 0;
+  return 1 + USAGE_THRESHOLDS.filter(threshold => tokens >= threshold).length;
+}
+
 export function shiftDate(date: string, days: number): string {
   return new Date(Date.parse(`${date}T00:00:00Z`) + days * DAY_MS).toISOString().slice(0, 10);
 }

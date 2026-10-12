@@ -33,16 +33,11 @@
 :where(.pilotdeck-settings-app) button.usage-cell:hover, :where(.pilotdeck-settings-app) button.usage-cell:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
 :where(.pilotdeck-settings-app) button.usage-cell[aria-pressed="true"] { outline: 1px solid var(--brand); outline-offset: 2px; }
 :where(.pilotdeck-settings-app) .usage-cell-placeholder { visibility: hidden; }
-:where(.pilotdeck-settings-app) .usage-level-0 { background: #f0f1f3; }
-:where(.pilotdeck-settings-app) .usage-level-1 { background: #dcecff; }
-:where(.pilotdeck-settings-app) .usage-level-2 { background: #abd4ff; }
-:where(.pilotdeck-settings-app) .usage-level-3 { background: #64adfa; }
-:where(.pilotdeck-settings-app) .usage-level-4 { background: #287bd1; }
-.dark :where(.pilotdeck-settings-app) .usage-level-0 { background: rgba(255, 255, 255, 0.07); }
-.dark :where(.pilotdeck-settings-app) .usage-level-1 { background: #21374c; }
-.dark :where(.pilotdeck-settings-app) .usage-level-2 { background: #255177; }
-.dark :where(.pilotdeck-settings-app) .usage-level-3 { background: #287bbb; }
-.dark :where(.pilotdeck-settings-app) .usage-level-4 { background: #58a7ed; }
+:where(.pilotdeck-settings-app) .usage-level-0 { background: color-mix(in srgb, var(--ink) 6%, var(--surface)); }
+:where(.pilotdeck-settings-app) .usage-level-1 { background: color-mix(in srgb, var(--brand) 20%, var(--surface)); }
+:where(.pilotdeck-settings-app) .usage-level-2 { background: color-mix(in srgb, var(--brand) 40%, var(--surface)); }
+:where(.pilotdeck-settings-app) .usage-level-3 { background: color-mix(in srgb, var(--brand) 70%, var(--surface)); }
+:where(.pilotdeck-settings-app) .usage-level-4 { background: var(--brand); }
 :where(.pilotdeck-settings-app) .usage-legend { display: flex; gap: 3px; justify-content: flex-end; align-items: center; color: var(--muted); font-size: 9px; margin-top: 5px; }
 :where(.pilotdeck-settings-app) .usage-legend > span:first-child { margin-right: 3px; }
 :where(.pilotdeck-settings-app) .usage-legend > span:last-child { margin-left: 3px; }
