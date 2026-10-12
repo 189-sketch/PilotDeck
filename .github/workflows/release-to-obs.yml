@@ -36,6 +36,23 @@ jobs:
             exit 1
           fi
 
+      - name: Install S3 client
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m venv "$RUNNER_TEMP/obs-cli"
+          "$RUNNER_TEMP/obs-cli/bin/pip" install 'awscli>=1.36,<2'
+          echo "$RUNNER_TEMP/obs-cli/bin" >> "$GITHUB_PATH"
+
+      - name: Check OBS access before downloading
+        shell: bash
+        run: |
+          set -euo pipefail
+          aws configure set default.s3.addressing_style path
+          aws s3api list-objects-v2 --bucket "$OBS_BUCKET" \
+            --prefix "github-releases/$GH_REPO/" --max-keys 1 \
+            --endpoint-url "$OBS_ENDPOINT" --query KeyCount --output text
+
       - name: Resolve latest formal release
         id: release
         shell: bash
@@ -75,14 +92,6 @@ jobs:
               raise SystemExit("Downloaded asset names or sizes differ from the resolved release")
           print(f"Verified {len(expected)} downloaded assets")
           PY
-
-      - name: Install S3 client
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 -m venv "$RUNNER_TEMP/obs-cli"
-          "$RUNNER_TEMP/obs-cli/bin/pip" install 'awscli>=1.36,<2'
-          echo "$RUNNER_TEMP/obs-cli/bin" >> "$GITHUB_PATH"
 
       - name: Upload assets to OBS
         env:
