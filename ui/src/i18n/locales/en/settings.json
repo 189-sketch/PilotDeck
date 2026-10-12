@@ -1642,7 +1642,7 @@
   },
   "gateway": {
     "title": "IM Channels",
-    "description": "Configure instant messaging channels (Feishu, WeChat, WeCom) so the agent can be reached from IM apps.",
+    "description": "Configure instant messaging channels (Feishu/Lark, WeChat, WeCom, Slack, Telegram) so the agent can be reached from IM apps.",
     "connected": "Connected",
     "notConfigured": "Not configured",
     "enabled": "Enabled",
@@ -1654,6 +1654,28 @@
     "disable": "Disable",
     "cancel": "Cancel",
     "dismiss": "Dismiss",
+    "connecting": "Connecting…",
+    "connectionFailed": "Connection failed",
+    "verified": "Verified",
+    "keepSavedToken": "Saved — leave blank to keep it",
+    "slack": {
+      "title": "Slack",
+      "summary": "Chat with the agent in Slack DMs, or @mention it in channels",
+      "guide": "1. Create an app at api.slack.com/apps and turn on Socket Mode (no public URL needed).\n2. Create an App-Level Token with the connections:write scope.\n3. Add bot scopes: chat:write, app_mentions:read, im:history (plus channels:history to follow threads, reactions:write for the 👀 receipt).\n4. Subscribe to bot events app_mention and message.im (plus message.channels), then install the app and copy the Bot User OAuth Token.\nTip: Slack reserves \"/\" for its own commands — use !new to start a fresh session.",
+      "botToken": "Bot User OAuth Token",
+      "botTokenHint": "OAuth & Permissions → Bot User OAuth Token (xoxb-…)",
+      "appToken": "App-Level Token",
+      "appTokenHint": "Basic Information → App-Level Tokens (xapp-…, scope connections:write)",
+      "saveSuccess": "Slack config saved — connecting now"
+    },
+    "telegram": {
+      "title": "Telegram",
+      "summary": "Chat with the agent through a Telegram bot",
+      "guide": "1. Open @BotFather in Telegram and send /newbot.\n2. Copy the bot token it gives you and paste it below.\nThe bot answers every message in private chats. In groups it replies when @mentioned or when you reply to it. Uses long polling, so no public URL is needed (the server must be able to reach api.telegram.org).",
+      "token": "Bot Token",
+      "tokenHint": "From @BotFather, looks like 123456789:AA…",
+      "saveSuccess": "Telegram config saved — connecting now"
+    },
     "feishu": {
       "title": "Feishu / Lark",
       "label": "Feishu Bot",

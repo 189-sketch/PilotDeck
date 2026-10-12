@@ -1636,7 +1636,7 @@
   },
   "gateway": {
     "title": "IM 通道",
-    "description": "配置即时通讯通道，让 Agent 可以通过 IM 应用被访问。",
+    "description": "配置即时通讯通道（飞书/Lark、微信、企业微信、Slack、Telegram），让 Agent 可以通过 IM 应用被访问。",
     "connected": "已连接",
     "notConfigured": "未配置",
     "enabled": "已启用",
@@ -1648,6 +1648,28 @@
     "disable": "停用",
     "cancel": "取消",
     "dismiss": "关闭",
+    "connecting": "正在连接…",
+    "connectionFailed": "连接失败",
+    "verified": "验证通过",
+    "keepSavedToken": "已保存，留空则保持不变",
+    "slack": {
+      "title": "Slack",
+      "summary": "在 Slack 私聊中使用 Agent，或在频道里 @ 它",
+      "guide": "1. 在 api.slack.com/apps 创建应用并开启 Socket Mode（无需公网地址）。\n2. 创建带 connections:write 权限的 App-Level Token。\n3. 添加 Bot 权限：chat:write、app_mentions:read、im:history（跟进线程需 channels:history，👀 已读回执需 reactions:write）。\n4. 订阅 Bot 事件 app_mention 和 message.im（以及 message.channels），安装应用后复制 Bot User OAuth Token。\n提示：Slack 会把 \"/\" 开头的消息当作自身命令，请用 !new 开启新会话。",
+      "botToken": "Bot User OAuth Token",
+      "botTokenHint": "OAuth & Permissions → Bot User OAuth Token（xoxb-…）",
+      "appToken": "App-Level Token",
+      "appTokenHint": "Basic Information → App-Level Tokens（xapp-…，权限 connections:write）",
+      "saveSuccess": "Slack 配置已保存，正在连接"
+    },
+    "telegram": {
+      "title": "Telegram",
+      "summary": "通过 Telegram 机器人使用 Agent",
+      "guide": "1. 在 Telegram 中打开 @BotFather，发送 /newbot。\n2. 复制它返回的 Bot Token 并粘贴到下方。\n私聊中机器人会回复所有消息；群聊中被 @ 或被回复时才会响应。使用长轮询，无需公网地址（服务器需能访问 api.telegram.org）。",
+      "token": "Bot Token",
+      "tokenHint": "由 @BotFather 提供，形如 123456789:AA…",
+      "saveSuccess": "Telegram 配置已保存，正在连接"
+    },
     "feishu": {
       "title": "飞书 / Lark",
       "label": "飞书机器人",
