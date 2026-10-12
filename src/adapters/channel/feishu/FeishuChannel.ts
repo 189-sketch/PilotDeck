@@ -35,18 +35,24 @@ async function loadLarkSdk(): Promise<any> {
   return Lark;
 }
 
-const TENANT_TOKEN_URL = "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal";
-const SEND_MESSAGE_URL = "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id";
-const FEISHU_IMAGE_UPLOAD_URL = "https://open.feishu.cn/open-apis/im/v1/images";
-const FEISHU_FILE_UPLOAD_URL = "https://open.feishu.cn/open-apis/im/v1/files";
-const FEISHU_MESSAGE_RESOURCE_URL = "https://open.feishu.cn/open-apis/im/v1/messages";
-const REACTION_URL = "https://open.feishu.cn/open-apis/im/v1/messages";
-const UPDATE_MESSAGE_URL = "https://open.feishu.cn/open-apis/im/v1/messages";
+const TENANT_TOKEN_PATH = "/open-apis/auth/v3/tenant_access_token/internal";
+const SEND_MESSAGE_PATH = "/open-apis/im/v1/messages?receive_id_type=chat_id";
+const FEISHU_IMAGE_UPLOAD_PATH = "/open-apis/im/v1/images";
+const FEISHU_FILE_UPLOAD_PATH = "/open-apis/im/v1/files";
+const FEISHU_MESSAGES_PATH = "/open-apis/im/v1/messages";
+const FEISHU_OPEN_API_BASE = {
+  feishu: "https://open.feishu.cn",
+  lark: "https://open.larksuite.com",
+} as const;
 const PROCESSING_EMOJI = "OnIt";
 const TOKEN_REFRESH_BUFFER_MS = 5 * 60 * 1000;
 const SEEN_EVENTS_MAX = 2000;
 const MAX_TEXT_MESSAGE_LENGTH = 4000;
 const DEFAULT_LIVE_REPLY_CURSOR = " ▉";
+/** Feishu rejects edits past 20 per message (error 230072). */
+const FEISHU_MAX_EDITS_PER_MESSAGE = 20;
+/** Pace live edits so one message streams for ~30s before rolling over. */
+const FEISHU_MIN_EDIT_INTERVAL_MS = 1_500;
 const FEISHU_MAX_ATTACHMENT_BYTES = 50 * 1024 * 1024;
 const FEISHU_ATTACHMENT_FETCH_TIMEOUT_MS = 60_000;
 const FEISHU_MAX_PENDING_TURNS_PER_CHAT = 20;
@@ -194,6 +200,7 @@ export class FeishuChannel implements ChannelAdapter {
       this.encryptKey = this.encryptKey ?? cfg.encryptKey;
       this.verifyToken = this.verifyToken ?? cfg.verifyToken;
       this.permissionMode = this.permissionMode ?? cfg.permissionMode;
+      if (cfg.domainName === "lark" || cfg.domainName === "feishu") this.domainName = cfg.domainName;
     }
 
     if (!this.explicitSend && (!this.appId || !this.appSecret)) {
@@ -546,11 +553,14 @@ export class FeishuChannel implements ChannelAdapter {
     if (!this.gateway) return;
     const isCurrentTurn = () => this.chatState.isCurrent(chatId, turn.generation);
     if (!isCurrentTurn()) return;
-    const reactionId = turn.messageId ? await this.addReaction(turn.messageId) : undefined;
+    // The "processing" reaction is cosmetic; start it alongside the turn so a
+    // Feishu round trip never delays handing the message to the agent.
+    const reactionPromise = turn.messageId ? this.addReaction(turn.messageId) : Promise.resolve(undefined);
     try {
       let activeRunId: string | undefined;
       let watchdogSettled = false;
       const liveReply = new ImLiveReplyController<FeishuLiveMessageHandle>({
+        minEditIntervalMs: FEISHU_MIN_EDIT_INTERVAL_MS,
         ...this.liveReplyOptions,
         transport: this.createLiveReplyTransport(chatId),
         onTransportError: (error, phase) => {
@@ -643,8 +653,12 @@ export class FeishuChannel implements ChannelAdapter {
       }
       await liveReply.flushFinal();
     } finally {
-      if (reactionId && turn.messageId) {
-        await this.removeReaction(turn.messageId, reactionId);
+      if (turn.messageId) {
+        const messageId = turn.messageId;
+        void reactionPromise.then((reactionId) => {
+          if (reactionId) return this.removeReaction(messageId, reactionId);
+          return undefined;
+        });
       }
       const activeRun = this.chatState.activeRun(chatId);
       if (activeRun?.generation === turn.generation) {
@@ -664,6 +678,7 @@ export class FeishuChannel implements ChannelAdapter {
     let liveHandle: FeishuLiveMessageHandle | undefined;
     return {
       maxMessageLength: MAX_TEXT_MESSAGE_LENGTH,
+      maxEditsPerMessage: FEISHU_MAX_EDITS_PER_MESSAGE,
       send: async (text) => {
         const result = await this.sendLiveMessage({ chatId, text }, {
           isFinal: !text.endsWith(liveCursor),
@@ -712,7 +727,7 @@ export class FeishuChannel implements ChannelAdapter {
     const form = new FormData();
     form.set("image_type", "message");
     form.set("image", new Blob([new Uint8Array(prepared.buffer)], { type: prepared.mimeType ?? "application/octet-stream" }), prepared.name);
-    const res = await fetch(FEISHU_IMAGE_UPLOAD_URL, {
+    const res = await fetch(this.openApiUrl(FEISHU_IMAGE_UPLOAD_PATH), {
       method: "POST",
       headers: { Authorization: `Bearer ${token}` },
       body: form,
@@ -731,7 +746,7 @@ export class FeishuChannel implements ChannelAdapter {
     form.set("file_type", inferFeishuFileType(prepared.name, prepared.mimeType));
     form.set("file_name", prepared.name);
     form.set("file", new Blob([new Uint8Array(prepared.buffer)], { type: prepared.mimeType ?? "application/octet-stream" }), prepared.name);
-    const res = await fetch(FEISHU_FILE_UPLOAD_URL, {
+    const res = await fetch(this.openApiUrl(FEISHU_FILE_UPLOAD_PATH), {
       method: "POST",
       headers: { Authorization: `Bearer ${token}` },
       body: form,
@@ -767,7 +782,7 @@ export class FeishuChannel implements ChannelAdapter {
       if (messageType === "image") {
         const imageKey = readString(content.image_key);
         if (!imageKey) throw new Error("image_key missing");
-        const url = `${FEISHU_MESSAGE_RESOURCE_URL}/${encodeURIComponent(input.messageId)}/resources/${encodeURIComponent(imageKey)}?type=image`;
+        const url = this.openApiUrl(`${FEISHU_MESSAGES_PATH}/${encodeURIComponent(input.messageId)}/resources/${encodeURIComponent(imageKey)}?type=image`);
         const attachment = await this.attachmentStore.saveFromUrl({
           url,
           chatId: input.chatId,
@@ -784,7 +799,7 @@ export class FeishuChannel implements ChannelAdapter {
       if (!fileKey) throw new Error("file_key missing");
       const name = readString(content.file_name) ?? readString(content.name) ?? fileKey;
       const bytes = readNumber(content.size);
-      const url = `${FEISHU_MESSAGE_RESOURCE_URL}/${encodeURIComponent(input.messageId)}/resources/${encodeURIComponent(fileKey)}?type=file`;
+      const url = this.openApiUrl(`${FEISHU_MESSAGES_PATH}/${encodeURIComponent(input.messageId)}/resources/${encodeURIComponent(fileKey)}?type=file`);
       const attachment = await this.attachmentStore.saveFromUrl({
         url,
         chatId: input.chatId,
@@ -835,7 +850,7 @@ export class FeishuChannel implements ChannelAdapter {
 
     try {
       const token = await this.getTenantAccessToken();
-      const res = await fetch(SEND_MESSAGE_URL, {
+      const res = await fetch(this.openApiUrl(SEND_MESSAGE_PATH), {
         method: "POST",
         headers: {
           "Content-Type": "application/json; charset=utf-8",
@@ -885,7 +900,7 @@ export class FeishuChannel implements ChannelAdapter {
 
     try {
       const token = await this.getTenantAccessToken();
-      const res = await fetch(`${UPDATE_MESSAGE_URL}/${encodeURIComponent(messageId)}`, {
+      const res = await fetch(this.openApiUrl(`${FEISHU_MESSAGES_PATH}/${encodeURIComponent(messageId)}`), {
         method: "PUT",
         headers: {
           "Content-Type": "application/json; charset=utf-8",
@@ -920,7 +935,7 @@ export class FeishuChannel implements ChannelAdapter {
 
     try {
       const token = await this.getTenantAccessToken();
-      const res = await fetch(SEND_MESSAGE_URL, {
+      const res = await fetch(this.openApiUrl(SEND_MESSAGE_PATH), {
         method: "POST",
         headers: {
           "Content-Type": "application/json; charset=utf-8",
@@ -960,7 +975,7 @@ export class FeishuChannel implements ChannelAdapter {
 
     try {
       const token = await this.getTenantAccessToken();
-      const res = await fetch(`${UPDATE_MESSAGE_URL}/${encodeURIComponent(messageId)}`, {
+      const res = await fetch(this.openApiUrl(`${FEISHU_MESSAGES_PATH}/${encodeURIComponent(messageId)}`), {
         method: "PUT",
         headers: {
           "Content-Type": "application/json; charset=utf-8",
@@ -996,7 +1011,7 @@ export class FeishuChannel implements ChannelAdapter {
     if (!this.appId || !this.appSecret) return undefined;
     try {
       const token = await this.getTenantAccessToken();
-      const res = await fetch(`${REACTION_URL}/${messageId}/reactions`, {
+      const res = await fetch(this.openApiUrl(`${FEISHU_MESSAGES_PATH}/${messageId}/reactions`), {
         method: "POST",
         headers: {
           "Content-Type": "application/json; charset=utf-8",
@@ -1022,7 +1037,7 @@ export class FeishuChannel implements ChannelAdapter {
     if (!this.appId || !this.appSecret) return;
     try {
       const token = await this.getTenantAccessToken();
-      await fetch(`${REACTION_URL}/${messageId}/reactions/${reactionId}`, {
+      await fetch(this.openApiUrl(`${FEISHU_MESSAGES_PATH}/${messageId}/reactions/${reactionId}`), {
         method: "DELETE",
         headers: { Authorization: `Bearer ${token}` },
       });
@@ -1040,7 +1055,7 @@ export class FeishuChannel implements ChannelAdapter {
 
     this.tokenInflight = (async () => {
       try {
-        const res = await fetch(TENANT_TOKEN_URL, {
+        const res = await fetch(this.openApiUrl(TENANT_TOKEN_PATH), {
           method: "POST",
           headers: { "Content-Type": "application/json; charset=utf-8" },
           body: JSON.stringify({ app_id: this.appId, app_secret: this.appSecret }),
@@ -1061,6 +1076,10 @@ export class FeishuChannel implements ChannelAdapter {
     })();
 
     return this.tokenInflight;
+  }
+
+  private openApiUrl(path: string): string {
+    return `${FEISHU_OPEN_API_BASE[this.domainName] ?? FEISHU_OPEN_API_BASE.feishu}${path}`;
   }
 
   private parseInbound(body: string): ParsedEvent {
