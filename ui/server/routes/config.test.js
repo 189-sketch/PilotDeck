@@ -2008,6 +2008,95 @@ describe('config test-web-search route', () => {
 describe('saved Web Search provider configurations', () => {
   const glmEndpoint = 'https://api.z.ai/api/paas/v4/web_search';
 
+  describe.each(['raw', 'config'])('mixed legacy and provider records with %s saves', shape => {
+    const submit = (request, config) => request('/api/config', {
+      method: 'PUT', body: JSON.stringify(shape === 'raw' ? { raw: stringifyYaml(config) } : { config }),
+    });
+
+    it.each([
+      ['glm', { endpoint: 'https://proxy.example/search' }],
+      ['glm', { endpoint: glmEndpoint }],
+      ['custom', {
+        endpoint: 'https://custom.example/search',
+        customProvider: { auth: 'queryApiKey', method: 'GET' },
+      }],
+    ])('keeps both credential sources unchanged when saving unrelated settings: %s %j', async (provider, settings) => {
+      const webSearch = {
+        enabled: true, provider, apiKey: 'legacy-key',
+        ...(provider === 'custom'
+          ? { endpoint: 'https://legacy.example/search', customProvider: { auth: 'bearer', method: 'POST' } }
+          : {}),
+        providers: { [provider]: { apiKey: 'provider-key', ...settings } },
+      };
+      const { request, configPath } = await createDiskConfigApp(stringifyYaml({
+        tools: { webSearch }, telemetry: { enabled: false },
+      }));
+      const current = (await request('/api/config')).body.config;
+      expect(current.tools.webSearch.apiKey).toBe('********');
+      expect(current.tools.webSearch.providers[provider].apiKey).toBe('********');
+      current.telemetry.enabled = true;
+      const response = await submit(request, current);
+      expect(response.status).toBe(200);
+      const saved = parseYaml(readFileSync(configPath, 'utf8'));
+      expect(saved.telemetry.enabled).toBe(true);
+      expect(saved.tools.webSearch).toEqual(webSearch);
+      expect(resolveWebSearchConfig(saved.tools.webSearch).apiKey).toBe('provider-key');
+    });
+
+    it('still rejects endpoint and authentication changes for either masked credential source', async () => {
+      const { request, configPath } = await createDiskConfigApp(stringifyYaml({ tools: { webSearch: {
+        enabled: true, provider: 'custom', apiKey: 'legacy-key', endpoint: 'https://legacy.example/search',
+        customProvider: { auth: 'bearer', method: 'POST' },
+        providers: { custom: {
+          apiKey: 'provider-key', endpoint: 'https://custom.example/search',
+          customProvider: { auth: 'queryApiKey', method: 'GET' },
+        } },
+      } } }));
+      const before = readFileSync(configPath, 'utf8');
+      const current = (await request('/api/config')).body.config;
+      for (const source of ['legacy', 'provider']) {
+        for (const field of ['endpoint', 'auth', 'method']) {
+          const changed = structuredClone(current);
+          const settings = source === 'legacy' ? changed.tools.webSearch : changed.tools.webSearch.providers.custom;
+          if (field === 'endpoint') settings.endpoint = 'https://changed.example/search';
+          else if (field === 'auth') settings.customProvider.auth = 'bodyApiKey';
+          else settings.customProvider.method = settings.customProvider.method === 'POST' ? 'GET' : 'POST';
+          const response = await submit(request, changed);
+          expect(response.status).toBe(400);
+          expect(readFileSync(configPath, 'utf8')).toBe(before);
+        }
+      }
+    });
+
+    it('removes legacy fields only when the form explicitly migrates its search settings', async () => {
+      const { request, configPath } = await createDiskConfigApp(stringifyYaml({ tools: { webSearch: {
+        enabled: true, provider: 'glm', apiKey: 'legacy-key',
+        providers: { glm: { apiKey: 'provider-key', endpoint: 'https://proxy.example/search' } },
+      } } }));
+      const current = (await request('/api/config')).body.config;
+      current.tools.webSearch = webSearchConfigForProvider(current.tools.webSearch, 'tavily', glmEndpoint);
+      const response = await submit(request, current);
+      expect(response.status).toBe(200);
+      const saved = parseYaml(readFileSync(configPath, 'utf8')).tools.webSearch;
+      expect(saved.apiKey).toBeUndefined();
+      expect(saved.endpoint).toBeUndefined();
+      expect(saved.providers.glm).toEqual({ apiKey: 'provider-key', endpoint: 'https://proxy.example/search' });
+    });
+
+    it('does not borrow a provider record key for a new masked legacy field', async () => {
+      const { request, configPath } = await createDiskConfigApp(stringifyYaml({ tools: { webSearch: {
+        enabled: true, provider: 'glm', providers: { glm: { apiKey: 'provider-key' } },
+      } } }));
+      const before = readFileSync(configPath, 'utf8');
+      const current = (await request('/api/config')).body.config;
+      current.tools.webSearch.apiKey = '********';
+      const response = await submit(request, current);
+      expect(response.status).toBe(400);
+      expect(response.body.error).toContain('Saved Web Search API key is unavailable');
+      expect(readFileSync(configPath, 'utf8')).toBe(before);
+    });
+  });
+
   it.each(['raw', 'config'])('migrates and retains both keys on disk through switching and toggling with %s saves', async shape => {
     const { request, configPath } = await createDiskConfigApp(stringifyYaml({
       tools: { webSearch: { enabled: true, provider: 'glm', apiKey: 'glm-original' } },

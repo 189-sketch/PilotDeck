@@ -286,7 +286,7 @@ function validateMaskedWebSearchKeyReuse(nextConfig, previousConfig) {
 
   const entries = [];
   if (nextWebSearch?.apiKey === MASKED_SECRET) {
-    entries.push([nextWebSearch, resolveWebSearchConfig(previousWebSearch ?? {})]);
+    entries.push([nextWebSearch, previousWebSearch ?? {}]);
   }
   for (const [provider, settings] of Object.entries(nextWebSearch?.providers ?? {})) {
     if (!isWebSearchProvider(provider) || settings?.apiKey !== MASKED_SECRET) continue;
@@ -307,8 +307,8 @@ function validateMaskedWebSearchKeyReuse(nextConfig, previousConfig) {
   return null;
 }
 
-// The first form edit moves a legacy key into providers.<id>.apiKey. Supply the
-// same prior secret at both paths so masked edits can migrate without exposing it.
+// Keep each existing secret at its original path. Only add the legacy provider
+// fallback for form migrations; an existing provider record remains independent.
 function webSearchSecretSource(config) {
   const webSearch = config?.tools?.webSearch;
   if (!webSearch || typeof webSearch !== 'object' || Array.isArray(webSearch)) return config;
@@ -317,8 +317,8 @@ function webSearchSecretSource(config) {
     tools: {
       ...config.tools,
       webSearch: {
+        ...webSearch,
         ...migrateWebSearchProviderConfigs(webSearch),
-        ...resolveWebSearchConfig(webSearch),
       },
     },
   };
