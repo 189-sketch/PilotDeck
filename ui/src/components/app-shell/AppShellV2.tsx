@@ -6,6 +6,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useMatch, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import ReactDOM from 'react-dom';
+import {
+  SkillConversationContext,
+  type ConversationSkill,
+  type SkillConversationRequest,
+} from '../../contexts/SkillConversationContext';
 import { useWebSocket } from '../../contexts/WebSocketContext';
 import { useDeviceSettings } from '../../hooks/useDeviceSettings';
 import { useSessionProtection } from '../../hooks/useSessionProtection';
@@ -64,6 +69,11 @@ const SettingsComponent = Settings as unknown as (props: TypedSettingsProps) => 
 export default function AppShellV2() {
   useRejectExternalFileDropOutsideTargets();
   const navigate = useNavigate();
+  const [skillConversationRequest, setSkillConversationRequest] =
+    useState<SkillConversationRequest | null>(null);
+  const consumeSkillConversation = useCallback((id: string) => {
+    setSkillConversationRequest((request) => (request?.id === id ? null : request));
+  }, []);
   // Match the V2 URL shapes and hoist params up. A single wildcard route
   // owns this shell so state survives every URL transition.
   const matchProjectChat = useMatch('/p/:projectName/c/:sessionId');
@@ -579,6 +589,20 @@ export default function AppShellV2() {
     [handleNewSession, navigate, setActiveTab, acknowledgeNavigation],
   );
 
+  const handleSkillsProjectChange = useCallback((project: Project | null) => {
+    acknowledgeNavigation(null);
+    setSelectedProject(project);
+    setSelectedSession(null);
+  }, [acknowledgeNavigation, setSelectedProject, setSelectedSession]);
+
+  const handleUseSkill = useCallback((skill: ConversationSkill, project: Project | null) => {
+    const target = project ?? sidebarSharedProps.projects.find((item) => item.name === 'general');
+    const projectPath = target?.fullPath || target?.path;
+    if (!target || !projectPath) return;
+    setSkillConversationRequest({ id: crypto.randomUUID(), projectPath, skill });
+    handleStartNewSession(target);
+  }, [sidebarSharedProps.projects, handleStartNewSession]);
+
   const handleHomeNewConversation = useCallback(() => {
     const draftProject = resolveHomeNewConversationProject({
       selectedProject,
@@ -735,55 +759,61 @@ export default function AppShellV2() {
         onTouchMoveCapture={acknowledge}
         className="app-main flex min-h-0 min-w-0 flex-1 flex-col bg-white dark:bg-neutral-950"
       >
-        <MainAreaV2
-          workspaceUpload={workspaceUpload}
-          projects={sidebarSharedProps.projects}
-          selectedProject={selectedProject}
-          selectedSession={selectedSession}
-          activeTab={shellActiveTab}
-          // The workspace stays mounted behind settings. Its availability
-          // effects may reset a restored tab while projects load; they must
-          // not navigate away from the visible settings page.
-          setActiveTab={isSettingsRoute ? setActiveTab : handleSelectTab}
-          ws={ws}
-          sendMessage={sendMessage}
-          latestMessage={latestMessage}
-          isMobile={isMobile}
-          onMenuClick={onMenuClick}
-          isLoading={isLoadingProjects}
-          onInputFocusChange={setIsInputFocused}
-          onSessionActive={markSessionAsActive}
-          onSessionInactive={handleSessionInactive}
-          onSessionProcessing={markSessionAsProcessing}
-          onSessionNotProcessing={markSessionAsNotProcessing}
-          onSessionActivityBump={handleSessionActivityBump}
-          processingSessions={processingSessions}
-          unreadSessionIds={unreadSessionIds}
-          onReplaceTemporarySession={handleReplaceTemporarySession}
-          onNavigateToSession={(sid: string) => {
-            setSelectedSession((prev) => prev?.id === sid ? prev : { id: sid } as ProjectSession);
-            navigate(`/session/${sid}`);
-          }}
-          onStartNewSession={handleStartNewSession}
-          onCreateProject={handleOpenNewProject}
-          onSelectWorkspace={handleStartNewSession}
-          onSelectSession={handleSelectSession}
-          onShowSettings={onShowSettings}
-          onSelectProjectByName={(name: string) => {
-            const target = sidebarSharedProps.projects.find((p) => p.name === name);
-            if (target) {
-              setSelectedProject(target);
-              setSelectedSession(null);
-              setActiveTab('dashboard');
-              navigate(`/p/${encodeURIComponent(target.name)}`);
-            }
-          }}
-          isSidebarCollapsed={!isMobile && !desktopSidebarOpen}
-          onOpenSidebar={onOpenDesktopSidebar}
-          externalMessageUpdate={externalMessageUpdate}
-          misroutedFileFromUrl={misroutedFileFromUrl}
-          onMisroutedFileUrlHandled={handleMisroutedFileUrlHandled}
-        />
+        <SkillConversationContext.Provider
+          value={{ request: skillConversationRequest, consume: consumeSkillConversation }}
+        >
+          <MainAreaV2
+            onSkillsProjectChange={handleSkillsProjectChange}
+            onUseSkill={handleUseSkill}
+            workspaceUpload={workspaceUpload}
+            projects={sidebarSharedProps.projects}
+            selectedProject={selectedProject}
+            selectedSession={selectedSession}
+            activeTab={shellActiveTab}
+            // The workspace stays mounted behind settings. Its availability
+            // effects may reset a restored tab while projects load; they must
+            // not navigate away from the visible settings page.
+            setActiveTab={isSettingsRoute ? setActiveTab : handleSelectTab}
+            ws={ws}
+            sendMessage={sendMessage}
+            latestMessage={latestMessage}
+            isMobile={isMobile}
+            onMenuClick={onMenuClick}
+            isLoading={isLoadingProjects}
+            onInputFocusChange={setIsInputFocused}
+            onSessionActive={markSessionAsActive}
+            onSessionInactive={handleSessionInactive}
+            onSessionProcessing={markSessionAsProcessing}
+            onSessionNotProcessing={markSessionAsNotProcessing}
+            onSessionActivityBump={handleSessionActivityBump}
+            processingSessions={processingSessions}
+            unreadSessionIds={unreadSessionIds}
+            onReplaceTemporarySession={handleReplaceTemporarySession}
+            onNavigateToSession={(sid: string) => {
+              setSelectedSession((prev) => prev?.id === sid ? prev : { id: sid } as ProjectSession);
+              navigate(`/session/${sid}`);
+            }}
+            onStartNewSession={handleStartNewSession}
+            onCreateProject={handleOpenNewProject}
+            onSelectWorkspace={handleStartNewSession}
+            onSelectSession={handleSelectSession}
+            onShowSettings={onShowSettings}
+            onSelectProjectByName={(name: string) => {
+              const target = sidebarSharedProps.projects.find((p) => p.name === name);
+              if (target) {
+                setSelectedProject(target);
+                setSelectedSession(null);
+                setActiveTab('dashboard');
+                navigate(`/p/${encodeURIComponent(target.name)}`);
+              }
+            }}
+            isSidebarCollapsed={isMobile || !desktopSidebarOpen}
+            onOpenSidebar={isMobile ? onMenuClick : onOpenDesktopSidebar}
+            externalMessageUpdate={externalMessageUpdate}
+            misroutedFileFromUrl={misroutedFileFromUrl}
+            onMisroutedFileUrlHandled={handleMisroutedFileUrlHandled}
+          />
+        </SkillConversationContext.Provider>
       </main>
       </div>
 
