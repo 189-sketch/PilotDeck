@@ -2,8 +2,9 @@
 
 Enable **Settings → Search**, select a provider, enter its API key, then use
 **Test connection**. API documentation/key links appear beside the provider.
-Switching providers clears the previous credentials. Keys remain in the local
-configuration and masked keys are reused only for the same provider/endpoint.
+Each provider's key and settings remain in the local configuration when switching
+providers. Switching back restores its saved settings. Masked keys are reused only
+for the same provider, endpoint and authentication settings.
 
 | Provider | Credential environment variable | Official API contract |
 | --- | --- | --- |
@@ -34,9 +35,18 @@ tools:
   webSearch:
     enabled: true
     provider: serpapi
-    searchEngine: bing  # google (default), bing, baidu, duckduckgo, yahoo, yandex
-    # apiKey can instead come from SERPAPI_API_KEY
+    providers:
+      serpapi:
+        searchEngine: bing  # google (default), bing, baidu, duckduckgo, yahoo, yandex
+        # apiKey can instead come from SERPAPI_API_KEY
+      tavily:
+        apiKey: "your-tavily-key"
 ```
+
+Only the selected provider is used for connection tests and searches. The legacy
+flat `apiKey`, `endpoint`, `searchEngine` and `customProvider` fields are still
+accepted for the selected provider; the settings UI moves them into that provider's
+entry on the next edit. A saved provider entry takes precedence over legacy fields.
 
 Baidu uses the Qianfan `web_search` endpoint with Bearer authentication,
 `search_source: baidu_search_v2` and web resources. Bocha uses

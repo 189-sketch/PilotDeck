@@ -1,5 +1,6 @@
 import type { ExplicitModelSelection } from "../gateway/protocol/types.js";
 import { isOptionalFeatureEnabled } from "../pilot/config/optionalFeature.js";
+import { resolveWebSearchConfig } from "../pilot/config/webSearchConfig.js";
 import { createHash, randomUUID } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync as mkdirSyncFs, renameSync, readFileSync, watchFile, unwatchFile } from "node:fs";
 import { dirname, resolve, join as joinPath } from "node:path";
@@ -994,7 +995,9 @@ class ProjectRuntimeRegistry {
       now: this.options.now,
       onCompletion: (event) => this.emitBackgroundTaskCompletion(event),
     });
-    const webSearchConfig = snapshot.config.tools?.webSearch;
+    const webSearchConfig = snapshot.config.tools?.webSearch
+      ? resolveWebSearchConfig(snapshot.config.tools.webSearch)
+      : undefined;
     const tools = createBuiltinRegistry({
       backgroundTasks: { runtime: backgroundTasks },
       readSkill: {
