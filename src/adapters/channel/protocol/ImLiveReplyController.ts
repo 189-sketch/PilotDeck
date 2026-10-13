@@ -86,6 +86,8 @@ const DEFAULT_BUFFER_THRESHOLD = 96;
 const DEFAULT_INITIAL_THROTTLE_MS = 800;
 const DEFAULT_INITIAL_BUFFER_THRESHOLD = 24;
 const DEFAULT_MIN_EDIT_INTERVAL_MS = 1_000;
+/** Upper bound on how much `formatText` can grow raw text (`&` → `&amp;`). */
+const MAX_FORMAT_EXPANSION = 6;
 const DEFAULT_TURN_TIMEOUT_MS = 600_000;
 const DEFAULT_ACTIVITY_DELAY_MS = 2_500;
 const DEFAULT_ACTIVITY_UPDATE_THROTTLE_MS = 10_000;
@@ -373,7 +375,17 @@ export class ImLiveReplyController<Handle = ImLiveReplyHandle> {
           continue;
         }
 
-        const piece = rest.length > available ? rest.slice(0, available) : rest;
+        let piece = rest.length > available ? rest.slice(0, available) : rest;
+        piece = this.fitFormattedPiece(this.currentSegment.text, piece);
+        if (!piece) {
+          if (this.currentSegment.text) {
+            this.rollOverSegment();
+            continue;
+          }
+          // Not even one character fits once formatted; keep making progress
+          // and let the transport-side truncation handle the pathological case.
+          piece = rest.slice(0, 1);
+        }
         this.appendToCurrentSegment(piece);
         rest = rest.slice(piece.length);
         if (rest) {
@@ -501,6 +513,35 @@ export class ImLiveReplyController<Handle = ImLiveReplyHandle> {
     const max = this.transport.maxMessageLength;
     if (!max) return undefined;
     return Math.max(1, max - this.cursor.length);
+  }
+
+  /**
+   * The live text limit is measured on raw text, but transports with
+   * `formatText` may expand it (Slack escapes `<`, `>` and `&` into entities).
+   * Return the longest prefix of `piece` whose formatted segment, cursor
+   * included, still fits in one message, so the overflow rolls into the next
+   * message instead of being cut off by `formatForTransport`.
+   */
+  private fitFormattedPiece(base: string, piece: string): string {
+    const max = this.transport.maxMessageLength;
+    if (!this.transport.formatText || !max || !piece) return piece;
+    // Formatting the whole segment on every delta is wasted work while it is
+    // far below the limit; no formatter expands text more than this.
+    if ((base.length + piece.length + this.cursor.length) * MAX_FORMAT_EXPANSION <= max) return piece;
+    const fits = (length: number) => this.formattedLength(`${base}${piece.slice(0, length)}${this.cursor}`) <= max;
+    if (fits(piece.length)) return piece;
+    let low = 0;
+    let high = piece.length - 1;
+    while (low < high) {
+      const mid = Math.ceil((low + high) / 2);
+      if (fits(mid)) low = mid;
+      else high = mid - 1;
+    }
+    return low > 0 && fits(low) ? piece.slice(0, low) : "";
+  }
+
+  private formattedLength(text: string): number {
+    return this.transport.formatText ? this.transport.formatText(text).length : text.length;
   }
 
   private scheduleInitialTextFlush(segment: Segment<Handle>): void {
