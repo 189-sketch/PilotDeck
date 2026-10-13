@@ -1,6 +1,23 @@
 name: macOS
 
 on:
+  workflow_dispatch:
+    inputs:
+      release_date:
+        description: Optional build date in YYYY-MM-DD
+        required: false
+        default: ""
+        type: string
+      revision:
+        description: Zero-based same-day build revision
+        required: false
+        default: "0"
+        type: string
+      require_macos_signing:
+        description: Build signed and notarized validation artifacts without publishing a release
+        required: false
+        default: false
+        type: boolean
   workflow_call:
     inputs:
       release_date:
