@@ -170,4 +170,10 @@ node --import tsx --test tests/mcp/*.spec.ts tests/mcp/client/McpClient.spec.ts 
 
 ### 2026-10-13 权限同步修复验证
 
-在 macOS arm64 上使用现有 Developer ID 签名组件的完整副本完成验证，没有重签或改写正式安装包。正式 PilotDeck 客户端通过运行时覆盖加载待测代码，另起独立网页实例。辅助功能、屏幕录制分别关闭时，两端 API 和页面自动显示待授权；恢复后各自建立新连接。独立控制器和实际客户端/网页部署均验证了关闭或重新检测一端不会改变另一端的 PID、socket 和配置；停用的一端仍显示系统实际授予的权限。最后将本地 3001 实例切换到修复后的运行时，并保留原配置。两端的实际 MCP 都成功返回 PilotDeck 窗口截图和辅助功能树。新增原生 probe 使用本地开发签名编译并运行通过；其正式签名产物仍需发布 CI 验证。Windows/Linux 当前验证为代码回归与 CI 接入，本机未进行这些系统的 GUI 实测。
+修复分支从 `upstream/main` 的 `dbb893de` 创建。初步验证使用现有 Developer ID 签名组件和运行时覆盖；随后从修复提交完整构建 Electron 目录包，再通过 [macOS 签名验证构建](https://github.com/OpenBMB/PilotDeck/actions/runs/38340998405) 生成 `4ffcab6b` 的正式签名安装包。验证流程仅上传构建产物，不发布 Release。
+
+在本机 macOS arm64 解压并直接启动新签名包，使用包内后端、Node 和 layout 7 原生组件，没有运行时覆盖。深度签名校验、公证票据、Gatekeeper、DMG 校验和打包后的只读原生 probe 均通过。新组件自动识别同一正式签名身份已有的两项授权，不需要重新授予。安装在 `/Applications` 的原客户端未被替换。
+
+新客户端与本地 3001 网页实例同时运行；两端分别使用新、旧版本的不可变正式组件。辅助功能与屏幕录制分别关闭时，两端 API 和页面自动显示待授权；录屏撤权时确认两端撤销各自的 MCP 配置。重新开启后两端自动恢复可用，无需重启 PilotDeck。分别关闭、重新启用和重新检测一端，另一端的 Driver PID 与 socket 保持不变；停用的一端仍显示真实系统授权。最终两端实际 MCP 均返回 PilotDeck 窗口截图和辅助功能树，两项系统权限已恢复。
+
+[跨平台 CI](https://github.com/OpenBMB/PilotDeck/actions/runs/38341049095) 的 macOS、Windows、Linux 检查与 x64/arm64 打包任务全部通过；Windows/Linux 安装与现有 GUI smoke 通过，但未在这些系统上完成真实桌面的电脑操控任务。正式 macOS arm64/x64 签名构建全部通过；x64 首次在 Apple 公证票据 stapling 时发生网络断连，重试同一任务后通过。此轮不是全新 macOS 账户测试，也不代表未来任意签名身份变更都能继承旧授权。
