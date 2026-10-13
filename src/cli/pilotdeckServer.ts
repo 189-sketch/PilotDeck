@@ -39,6 +39,8 @@ export type PilotDeckServer = GatewayServer & {
   hotStartChannel(channel: ChannelAdapter): Promise<void>;
   /** Stop a running channel (e.g. after it was disabled in config). No-op if not running. */
   stopChannel(channelKey: string, reason?: string): Promise<void>;
+  /** Last runtime state a channel reported ("connected", "failed", …), if any. */
+  channelState(channelKey: string): string | undefined;
   deliverCronResult(delivery: CronResultDelivery): Promise<boolean>;
 };
 
@@ -48,10 +50,15 @@ export async function startPilotDeckServer(options: StartPilotDeckServerOptions)
     warn: (msg: string) => console.warn(msg),
     error: (msg: string) => console.error(msg),
   };
-  const reportChannelStatus = createSafeChannelStatusReporter(
+  const persistChannelStatus = createSafeChannelStatusReporter(
     createChannelRuntimeStatusReporter(resolvePilotHome(process.env)),
     consoleLogger,
   );
+  const lastChannelState = new Map<string, string>();
+  const reportChannelStatus: ChannelRuntimeStatusReporter = (channelKey, update) => {
+    lastChannelState.set(channelKey, update.state);
+    persistChannelStatus(channelKey, update);
+  };
   const baseDeps = {
     gateway: options.gateway,
     config: options.config,
@@ -61,7 +68,24 @@ export async function startPilotDeckServer(options: StartPilotDeckServerOptions)
 
   const runningHandles = new Map<string, ChannelHandle>();
   const runningChannels = new Map<string, ChannelAdapter>();
-  const channelStarts = new Map<string, Promise<void>>();
+  /**
+   * Starts and stops of one channel run strictly one after another. Overlapping
+   * hot reloads would otherwise both miss the running instance and start two
+   * copies (two Telegram pollers fight with 409s; two Slack sockets split events).
+   */
+  const channelOps = new Map<string, Promise<void>>();
+
+  function enqueueChannelOp(channelKey: string, op: () => Promise<void>): Promise<void> {
+    const previous = channelOps.get(channelKey) ?? Promise.resolve();
+    const next = previous.catch(() => undefined).then(op);
+    channelOps.set(channelKey, next);
+    void next
+      .finally(() => {
+        if (channelOps.get(channelKey) === next) channelOps.delete(channelKey);
+      })
+      .catch(() => undefined);
+    return next;
+  }
 
   async function startAndTrack(ch: ChannelAdapter): Promise<void> {
     reportChannelStatus(ch.channelKey, {
@@ -90,7 +114,7 @@ export async function startPilotDeckServer(options: StartPilotDeckServerOptions)
   });
 
   function startChannelInBackground(channel: ChannelAdapter): Promise<void> {
-    const start = startAndTrack(channel)
+    return enqueueChannelOp(channel.channelKey, () => startAndTrack(channel)
       .then(() => {
         consoleLogger.info(`[adapters] channel ${channel.channelKey} startup task completed`);
       })
@@ -102,12 +126,7 @@ export async function startPilotDeckServer(options: StartPilotDeckServerOptions)
           message: `${channel.channelKey}: startup failed`,
           error: message,
         });
-      })
-      .finally(() => {
-        channelStarts.delete(channel.channelKey);
-      });
-    channelStarts.set(channel.channelKey, start);
-    return start;
+      }));
   }
 
   const startupChannels = [
@@ -125,19 +144,23 @@ export async function startPilotDeckServer(options: StartPilotDeckServerOptions)
       void startChannelInBackground(channel);
       return Promise.resolve();
     },
-    async stopChannel(channelKey: string, reason = "disabled") {
-      await channelStarts.get(channelKey)?.catch(() => undefined);
-      const handle = runningHandles.get(channelKey);
-      if (!handle) return;
-      runningHandles.delete(channelKey);
-      runningChannels.delete(channelKey);
-      await handle.stop(reason).catch((e: unknown) => {
-        consoleLogger.warn(`[adapters] channel ${channelKey} stop failed: ${e instanceof Error ? e.message : String(e)}`);
+    stopChannel(channelKey: string, reason = "disabled") {
+      return enqueueChannelOp(channelKey, async () => {
+        const handle = runningHandles.get(channelKey);
+        if (!handle) return;
+        runningHandles.delete(channelKey);
+        runningChannels.delete(channelKey);
+        await handle.stop(reason).catch((e: unknown) => {
+          consoleLogger.warn(`[adapters] channel ${channelKey} stop failed: ${e instanceof Error ? e.message : String(e)}`);
+        });
+        reportChannelStatus(channelKey as ChannelAdapter["channelKey"], {
+          state: "stopped",
+          message: `${channelKey}: stopped (${reason})`,
+        });
       });
-      reportChannelStatus(channelKey as ChannelAdapter["channelKey"], {
-        state: "stopped",
-        message: `${channelKey}: stopped (${reason})`,
-      });
+    },
+    channelState(channelKey: string) {
+      return lastChannelState.get(channelKey);
     },
     async deliverCronResult(delivery: CronResultDelivery) {
       const channel = runningChannels.get(delivery.originChannelKey ?? delivery.channelKey);

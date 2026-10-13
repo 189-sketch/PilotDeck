@@ -255,8 +255,17 @@ async function main(argv = process.argv.slice(2)): Promise<void> {
     // --- Adapter hot-reload ---
 
     let serverRef: Awaited<ReturnType<typeof startPilotDeckServer>> | undefined;
-    /** Channels started via loadEnabledChannels (Slack, Telegram, …), so hot reload can stop disabled ones. */
-    let runningExtraChannelKeys = new Set<string>();
+    /**
+     * Config fingerprint of every channel started via loadEnabledChannels
+     * (Slack, Telegram, …). Hot reload stops the ones that were disabled and
+     * leaves unchanged healthy ones running, so saving another IM's settings
+     * does not drop their connection, queued turns or pending permission prompts.
+     */
+    let runningExtraChannelConfigs = new Map<string, string | undefined>();
+    const extraChannelFingerprint = (adapters: unknown, channelKey: string): string | undefined => {
+      const cfg = (adapters as Record<string, unknown> | undefined)?.[channelKey];
+      return cfg === undefined ? undefined : JSON.stringify(cfg);
+    };
 
     async function hotStartWeixinChannel(): Promise<void> {
       if (!serverRef) return;
@@ -322,18 +331,30 @@ async function main(argv = process.argv.slice(2)): Promise<void> {
         parts.push("wecom=started");
       }
 
-      const extraChannels = await loadEnabledChannels(config.adapters, { pilotHome });
-      const nextExtraKeys = new Set<string>(extraChannels.map((ch) => ch.channelKey));
-      for (const key of runningExtraChannelKeys) {
-        if (nextExtraKeys.has(key)) continue;
+      const extraChannels = await loadEnabledChannels(config.adapters, { pilotHome, statePersistence: channelStatePersistence });
+      const nextExtraConfigs = new Map(
+        extraChannels.map((ch) => [ch.channelKey, extraChannelFingerprint(config.adapters, ch.channelKey)] as const),
+      );
+      for (const key of runningExtraChannelConfigs.keys()) {
+        if (nextExtraConfigs.has(key)) continue;
         await serverRef.stopChannel(key, "disabled");
         parts.push(`${key}=stopped`);
       }
-      runningExtraChannelKeys = nextExtraKeys;
       for (const ch of extraChannels) {
+        const fingerprint = nextExtraConfigs.get(ch.channelKey);
+        const state = serverRef.channelState(ch.channelKey);
+        const unchanged = fingerprint !== undefined
+          && runningExtraChannelConfigs.get(ch.channelKey) === fingerprint
+          && state !== "failed"
+          && state !== "stopped";
+        if (unchanged) {
+          parts.push(`${ch.channelKey}=unchanged`);
+          continue;
+        }
         await serverRef.hotStartChannel(ch);
         parts.push(`${ch.channelKey}=started`);
       }
+      runningExtraChannelConfigs = nextExtraConfigs;
 
       if (parts.length) {
         console.log(`[pilotdeck] Adapter hot-reload complete: ${parts.join(", ")}`);
@@ -343,8 +364,10 @@ async function main(argv = process.argv.slice(2)): Promise<void> {
     // --- Server startup ---
 
     const envPort = Number.parseInt(env.PILOTDECK_GATEWAY_PORT ?? "", 10);
-    const extraChannels = await loadEnabledChannels(snapshot.config.adapters, { pilotHome });
-    runningExtraChannelKeys = new Set<string>(extraChannels.map((ch) => ch.channelKey));
+    const extraChannels = await loadEnabledChannels(snapshot.config.adapters, { pilotHome, statePersistence: channelStatePersistence });
+    runningExtraChannelConfigs = new Map(
+      extraChannels.map((ch) => [ch.channelKey, extraChannelFingerprint(snapshot.config.adapters, ch.channelKey)] as const),
+    );
     const feishuCfg = snapshot.config.adapters?.feishu;
     const savedFeishuState = await channelStatePersistence.load<FeishuSessionMapperState>("feishu");
     const feishuChannel = feishuCfg?.enabled === true

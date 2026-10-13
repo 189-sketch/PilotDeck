@@ -150,6 +150,7 @@ export class FeishuChannel implements ChannelAdapter {
   private verifyToken?: string;
   private connectionMode: FeishuConnectionMode;
   private domainName: "feishu" | "lark";
+  private readonly domainNameExplicit: boolean;
   private permissionMode?: "default" | "bypassPermissions";
 
   private gateway?: Gateway;
@@ -185,6 +186,7 @@ export class FeishuChannel implements ChannelAdapter {
     this.verifyToken = options.verifyToken;
     this.connectionMode = options.connectionMode ?? "stream";
     this.domainName = options.domainName ?? "feishu";
+    this.domainNameExplicit = options.domainName !== undefined;
     this.permissionMode = options.permissionMode;
     this.onStateChange = options.onStateChange;
   }
@@ -200,7 +202,11 @@ export class FeishuChannel implements ChannelAdapter {
       this.encryptKey = this.encryptKey ?? cfg.encryptKey;
       this.verifyToken = this.verifyToken ?? cfg.verifyToken;
       this.permissionMode = this.permissionMode ?? cfg.permissionMode;
-      if (cfg.domainName === "lark" || cfg.domainName === "feishu") this.domainName = cfg.domainName;
+      // Constructor options win: on hot reload deps.config is still the startup
+      // snapshot, so it must not undo a domain switch the new instance was built with.
+      if (!this.domainNameExplicit && (cfg.domainName === "lark" || cfg.domainName === "feishu")) {
+        this.domainName = cfg.domainName;
+      }
     }
 
     if (!this.explicitSend && (!this.appId || !this.appSecret)) {

@@ -13,7 +13,7 @@ import {
   ENGLISH_NEW_SESSION_TEXT,
   ENGLISH_SUBMIT_FAILED_TEXT,
 } from "../protocol/englishLiveReplyText.js";
-import { TelegramSessionMapper } from "./TelegramSessionMapper.js";
+import { TelegramSessionMapper, type TelegramSessionMapperState } from "./TelegramSessionMapper.js";
 
 /**
  * Telegram bot channel on the plain Bot API: long polling for updates (no
@@ -43,6 +43,8 @@ export type TelegramChannelOptions = {
   /** Unused: the channel always long-polls. Kept for config compatibility. */
   webhookUrl?: string;
   mapper?: TelegramSessionMapper;
+  /** Called after /new so the active session per chat survives restarts. */
+  onStateChange?: (state: TelegramSessionMapperState) => void;
   /** Override for tests or a self-hosted Bot API server / mirror. */
   apiBaseUrl?: string;
   permissionMode?: "default" | "bypassPermissions";
@@ -97,6 +99,7 @@ export class TelegramChannel implements ChannelAdapter {
   readonly channelKey: GatewayChannelKey = "telegram";
 
   private readonly mapper: TelegramSessionMapper;
+  private readonly onStateChange?: (state: TelegramSessionMapperState) => void;
   private token?: string;
   private readonly apiBaseUrl: string;
   private permissionMode?: "default" | "bypassPermissions";
@@ -119,6 +122,7 @@ export class TelegramChannel implements ChannelAdapter {
 
   constructor(options: TelegramChannelOptions = {}) {
     this.mapper = options.mapper ?? new TelegramSessionMapper();
+    this.onStateChange = options.onStateChange;
     this.token = options.token ?? process.env.TELEGRAM_BOT_TOKEN;
     this.apiBaseUrl = (options.apiBaseUrl ?? process.env.TELEGRAM_API_BASE_URL ?? TELEGRAM_API_BASE).replace(/\/+$/, "");
     this.permissionMode = options.permissionMode;
@@ -259,6 +263,7 @@ export class TelegramChannel implements ChannelAdapter {
     const previousSessionKey = this.mapper.resolve({ chatId, text: "" }).sessionKey;
     const mapped = this.mapper.resolve({ chatId, text });
     if (mapped.command === "new") {
+      this.onStateChange?.(this.mapper.snapshot());
       const activeRun = this.chatState.activeRun(chatId);
       this.chatState.resetForNewSession(chatId);
       this.elicitation.clear(chatId);
@@ -285,7 +290,10 @@ export class TelegramChannel implements ChannelAdapter {
         chatId,
         channelKey: "telegram",
         reply: (reply) => this.sendText(ctx, reply).then(() => undefined),
-        resetSession: () => { this.mapper.resolve({ chatId, text: "/new" }); },
+        resetSession: () => {
+          this.mapper.resolve({ chatId, text: "/new" });
+          this.onStateChange?.(this.mapper.snapshot());
+        },
         logger: this.logger,
       });
       if (handled) return;
