@@ -108,9 +108,15 @@ export async function startPilotDeckServer(options: StartPilotDeckServerOptions)
     port: options.port,
     host: options.host,
     staticAssetsPath: options.staticAssetsPath,
-    feishuWebhook: options.feishu
-      ? (request, response, body) => options.feishu!.handleWebhook(request, response, body)
-      : undefined,
+    feishuWebhook: (request, response, body) => {
+      // Resolve the active instance for every request, including channels enabled
+      // after startup. Never retain a replaced instance or its old credentials.
+      const channel = runningChannels.get("feishu");
+      if (channel instanceof FeishuChannel) return channel.handleWebhook(request, response, body);
+      response.writeHead(503, { "content-type": "application/json" });
+      response.end(JSON.stringify({ error: "feishu_not_started" }));
+      return true;
+    },
   });
 
   function startChannelInBackground(channel: ChannelAdapter): Promise<void> {

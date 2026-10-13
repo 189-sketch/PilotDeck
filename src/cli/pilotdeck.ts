@@ -262,6 +262,9 @@ async function main(argv = process.argv.slice(2)): Promise<void> {
      * does not drop their connection, queued turns or pending permission prompts.
      */
     let runningExtraChannelConfigs = new Map<string, string | undefined>();
+    let runningFeishuConfig = snapshot.config.adapters?.feishu?.enabled === true
+      ? JSON.stringify(snapshot.config.adapters.feishu)
+      : undefined;
     const extraChannelFingerprint = (adapters: unknown, channelKey: string): string | undefined => {
       const cfg = (adapters as Record<string, unknown> | undefined)?.[channelKey];
       return cfg === undefined ? undefined : JSON.stringify(cfg);
@@ -281,7 +284,12 @@ async function main(argv = process.argv.slice(2)): Promise<void> {
       const parts: string[] = [];
 
       const fCfg = config.adapters?.feishu;
-      if (fCfg?.enabled === true) {
+      const nextFeishuConfig = fCfg?.enabled === true ? JSON.stringify(fCfg) : undefined;
+      const feishuState = serverRef.channelState("feishu");
+      if (nextFeishuConfig && nextFeishuConfig === runningFeishuConfig
+        && feishuState !== "failed" && feishuState !== "stopped") {
+        parts.push("feishu=unchanged");
+      } else if (fCfg?.enabled === true) {
         const savedFeishu = await channelStatePersistence.load<FeishuSessionMapperState>("feishu");
         const ch = new FeishuChannel({
           appId: fCfg.appId,
@@ -296,7 +304,11 @@ async function main(argv = process.argv.slice(2)): Promise<void> {
         });
         await serverRef.hotStartChannel(ch);
         parts.push("feishu=started");
+      } else if (runningFeishuConfig !== undefined) {
+        await serverRef.stopChannel("feishu", "disabled");
+        parts.push("feishu=stopped");
       }
+      runningFeishuConfig = nextFeishuConfig;
 
       const wCfg = config.adapters?.weixin;
       if (wCfg?.enabled === true) {

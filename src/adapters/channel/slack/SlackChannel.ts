@@ -751,7 +751,8 @@ export function normalizeInboundText(text: string, botUserId: string | null): st
   t = t.replace(/<((?:https?|mailto):[^|>]+)\|([^>]+)>/g, (_m, url: string, label: string) => (label === url ? url : `${label} (${url})`));
   t = t.replace(/<((?:https?|mailto):[^>]+)>/g, "$1");
   t = t.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
-  return t.replace(/[ \t]{2,}/g, " ").trim();
+  // Preserve code indentation and significant whitespace inside the message.
+  return t.trim();
 }
 
 /**
