@@ -1,5 +1,6 @@
 import type { GatewayEvent } from "../../../gateway/index.js";
 import { isVisibleFailureStatusDetail } from "../../../status/agentStatus.js";
+import { closeCodeFence, codeFenceContinuation, codeFenceSplitPoint } from "./ImCodeFences.js";
 
 export type ImLiveReplyHandle = unknown;
 
@@ -37,6 +38,8 @@ export type ImLiveReplyTransport<Handle = ImLiveReplyHandle> = {
    */
   maxEditsPerMessage?: number;
   formatText?: (text: string) => string;
+  /** Keep code blocks intact when a Markdown reply spans several messages. */
+  preserveCodeFences?: boolean;
 };
 
 export type ImLiveReplyControllerOptions<Handle = ImLiveReplyHandle> = {
@@ -64,6 +67,7 @@ export type ImLiveReplyControllerOptions<Handle = ImLiveReplyHandle> = {
 
 type Segment<Handle> = {
   text: string;
+  codeFencePrefix: string;
   handle?: Handle;
   firstTextAt?: number;
   lastVisibleText: string;
@@ -268,8 +272,9 @@ export class ImLiveReplyController<Handle = ImLiveReplyHandle> {
       || this.currentSegment.lastVisibleFinalText.trim()
       || (finalizeActivityOnly && this.currentSegment.lastVisibleText.trim())
     ) {
-      this.completedSegments.push(this.currentSegment);
-      this.currentSegment = createSegment();
+      const previous = this.currentSegment;
+      this.completedSegments.push(previous);
+      this.currentSegment = this.nextSegment(previous);
     }
   }
 
@@ -374,18 +379,32 @@ export class ImLiveReplyController<Handle = ImLiveReplyHandle> {
     }
     if (this.closed) return;
 
+    if (this.editBudgetExhausted(this.currentSegment) && this.hasVisibleReplyText(this.currentSegment)) {
+      this.rollOverSegment();
+    }
     const liveTextLimit = this.liveTextLimit();
     if (liveTextLimit) {
       let rest = text;
       while (rest) {
-        const available = liveTextLimit - this.currentSegment.text.length;
-        if (available <= 0) {
-          this.rollOverSegment();
-          continue;
+        const available = liveTextLimit - this.currentSegment.codeFencePrefix.length - this.currentSegment.text.length;
+        let piece = rest.slice(0, Math.max(0, available));
+        piece = this.fitFormattedPiece(this.currentSegment.codeFencePrefix + this.currentSegment.text, piece);
+        if (this.transport.preserveCodeFences && piece.length < rest.length) {
+          const base = this.currentSegment.codeFencePrefix + this.currentSegment.text;
+          const split = codeFenceSplitPoint(base + rest, base.length + piece.length);
+          if (split > base.length) {
+            piece = rest.slice(0, split - base.length);
+          } else if (split > this.currentSegment.codeFencePrefix.length && split < base.length
+            && !this.currentSegment.editDisabled && !this.liveFlushQueued.has(this.currentSegment) && !this.inFlight) {
+            // The preferred line boundary (or an unfinished fence header) can
+            // be in a previous delta. Move the tail before sealing the segment.
+            const carried = base.slice(split);
+            this.currentSegment.text = this.currentSegment.text.slice(0, split - this.currentSegment.codeFencePrefix.length);
+            this.rollOverSegment();
+            rest = carried + rest;
+            continue;
+          }
         }
-
-        let piece = rest.length > available ? rest.slice(0, available) : rest;
-        piece = this.fitFormattedPiece(this.currentSegment.text, piece);
         if (!piece) {
           if (this.currentSegment.text) {
             this.rollOverSegment();
@@ -414,9 +433,6 @@ export class ImLiveReplyController<Handle = ImLiveReplyHandle> {
    */
   private appendToCurrentSegment(text: string): void {
     if (!text) return;
-    if (this.editBudgetExhausted(this.currentSegment) && this.hasVisibleReplyText(this.currentSegment)) {
-      this.rollOverSegment();
-    }
     const segment = this.currentSegment;
     segment.text += text;
     segment.firstTextAt ??= Date.now();
@@ -453,11 +469,24 @@ export class ImLiveReplyController<Handle = ImLiveReplyHandle> {
     this.clearActivityTimers();
     const segment = this.currentSegment;
     this.completedSegments.push(segment);
-    this.currentSegment = createSegment();
+    this.currentSegment = this.nextSegment(segment);
     this.runInBackground(
       () => this.flushCurrentNow({ final: true, force: true, finalizeActivityOnly: false }, segment),
       "edit",
     );
+  }
+
+  private nextSegment(previous: Segment<Handle>): Segment<Handle> {
+    const next = createSegment<Handle>();
+    if (this.transport.preserveCodeFences) {
+      next.codeFencePrefix = codeFenceContinuation(previous.codeFencePrefix + previous.text);
+    }
+    return next;
+  }
+
+  private replyText(segment: Segment<Handle>, text: string): string {
+    const raw = segment.codeFencePrefix + text;
+    return this.transport.preserveCodeFences ? closeCodeFence(raw) : raw;
   }
 
   private finalizeSegmentInBackground(): void {
@@ -524,7 +553,8 @@ export class ImLiveReplyController<Handle = ImLiveReplyHandle> {
     if (!this.transport.edit) return undefined;
     const max = this.transport.maxMessageLength;
     if (!max) return undefined;
-    return Math.max(1, max - this.cursor.length);
+    // Reserve the newline + closing fence before accepting raw text.
+    return Math.max(1, max - this.cursor.length - (this.transport.preserveCodeFences ? 4 : 0));
   }
 
   /**
@@ -536,11 +566,15 @@ export class ImLiveReplyController<Handle = ImLiveReplyHandle> {
    */
   private fitFormattedPiece(base: string, piece: string): string {
     const max = this.transport.maxMessageLength;
-    if (!this.transport.formatText || !max || !piece) return piece;
+    if (!max || !piece || (!this.transport.formatText && !this.transport.preserveCodeFences)) return piece;
     // Formatting the whole segment on every delta is wasted work while it is
     // far below the limit; no formatter expands text more than this.
-    if ((base.length + piece.length + this.cursor.length) * MAX_FORMAT_EXPANSION <= max) return piece;
-    const fits = (length: number) => this.formattedLength(`${base}${piece.slice(0, length)}${this.cursor}`) <= max;
+    if ((base.length + piece.length + this.cursor.length + (this.transport.preserveCodeFences ? 4 : 0)) * MAX_FORMAT_EXPANSION <= max) return piece;
+    const fits = (length: number) => {
+      const raw = `${base}${piece.slice(0, length)}`;
+      const text = this.transport.preserveCodeFences ? closeCodeFence(raw) : raw;
+      return this.formattedLength(`${text}${this.cursor}`) <= max;
+    };
     if (fits(piece.length)) return piece;
     let low = 0;
     let high = piece.length - 1;
@@ -831,7 +865,8 @@ export class ImLiveReplyController<Handle = ImLiveReplyHandle> {
       return;
     }
 
-    const visibleText = params.final ? finalText : `${finalText}${this.cursor}`;
+    const replyText = this.replyText(segment, finalText);
+    const visibleText = params.final ? replyText : `${replyText}${this.cursor}`;
     const formatted = this.formatForTransport(visibleText);
     if (!params.force && formatted === segment.lastVisibleText) {
       return;
@@ -1010,7 +1045,13 @@ export class ImLiveReplyController<Handle = ImLiveReplyHandle> {
   }
 
   private async sendFallbackContinuation(segment: Segment<Handle>, finalText: string): Promise<void> {
-    const continuation = continuationText(finalText, segment.fallbackPrefix);
+    let continuation = continuationText(finalText, segment.fallbackPrefix);
+    if (this.transport.preserveCodeFences) {
+      const delivered = finalText.startsWith(segment.fallbackPrefix) ? segment.fallbackPrefix : "";
+      const prefix = codeFenceContinuation(segment.codeFencePrefix + delivered);
+      continuation = finalText.slice(delivered.length);
+      if (continuation) continuation = closeCodeFence(prefix + continuation);
+    }
     if (!continuation.trim()) {
       segment.lastVisibleFinalText = finalText;
       return;
@@ -1143,6 +1184,7 @@ export class ImLiveReplyController<Handle = ImLiveReplyHandle> {
 function createSegment<Handle>(): Segment<Handle> {
   return {
     text: "",
+    codeFencePrefix: "",
     lastVisibleText: "",
     lastVisibleFinalText: "",
     editCount: 0,

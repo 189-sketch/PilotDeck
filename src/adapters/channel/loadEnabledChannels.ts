@@ -134,9 +134,8 @@ export type LoadEnabledChannelsOptions = {
 };
 
 /**
- * Read permissionMode from the config being loaded. Channels fall back to
- * `deps.config` in start(), but that stays the startup snapshot across hot
- * reloads, so a changed mode would otherwise not take effect until restart.
+ * Read permissionMode only from the config being loaded. An absent override
+ * must stay absent: deps.config is the startup snapshot across hot reloads.
  */
 function permissionModeOf(cfg: PilotPlatformAdapterConfig): "default" | "bypassPermissions" | undefined {
   const mode = cfg.extra?.permissionMode;

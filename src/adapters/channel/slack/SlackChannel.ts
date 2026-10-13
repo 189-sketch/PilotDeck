@@ -131,10 +131,8 @@ export class SlackChannel implements ChannelAdapter {
     const cfg = deps.config?.adapters?.slack;
     this.botToken = this.botToken || cfg?.token;
     this.appToken = this.appToken || readString(cfg?.extra?.appToken);
-    const cfgMode = cfg?.extra?.permissionMode;
-    if (!this.permissionMode && (cfgMode === "default" || cfgMode === "bypassPermissions")) {
-      this.permissionMode = cfgMode;
-    }
+    // The loader supplies the current permission override. deps.config is the
+    // startup snapshot and must not restore an override removed on hot reload.
 
     if (!this.botToken || !this.appToken) {
       const missing = !this.botToken ? "bot token (xoxb-…)" : "app-level token (xapp-…)";
@@ -583,6 +581,7 @@ export class SlackChannel implements ChannelAdapter {
   private createLiveTransport(ctx: SlackReplyContext, isCurrent: () => boolean): ImLiveReplyTransport<SlackMessageHandle> {
     return {
       maxMessageLength: MAX_MESSAGE_LENGTH,
+      preserveCodeFences: true,
       formatText: toSlackMrkdwn,
       send: async (text) => {
         if (!isCurrent()) return false;

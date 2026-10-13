@@ -137,10 +137,8 @@ export class TelegramChannel implements ChannelAdapter {
 
     const cfg = deps.config?.adapters?.telegram;
     this.token = this.token || cfg?.token;
-    const cfgMode = cfg?.extra?.permissionMode;
-    if (!this.permissionMode && (cfgMode === "default" || cfgMode === "bypassPermissions")) {
-      this.permissionMode = cfgMode;
-    }
+    // The loader supplies the current permission override. deps.config is the
+    // startup snapshot and must not restore an override removed on hot reload.
 
     if (!this.token) {
       this.logger?.error?.("telegram: bot token not configured; set it in Settings → IM or adapters.telegram.token");
@@ -518,6 +516,7 @@ export class TelegramChannel implements ChannelAdapter {
     let replyAttached = false;
     return {
       maxMessageLength: MAX_MESSAGE_LENGTH,
+      preserveCodeFences: true,
       send: async (text) => {
         if (!isCurrent()) return false;
         // Only the first message of a reply quotes the user's message.

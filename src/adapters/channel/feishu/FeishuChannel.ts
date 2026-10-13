@@ -226,15 +226,10 @@ export class FeishuChannel implements ChannelAdapter {
 
     this.stopped = false;
     if (this.connectionMode === "stream") {
-      const ok = await this.startStreamMode();
-      if (!ok) {
+      deps.reportChannelStatus?.("feishu", { state: "starting", message: "feishu: stream connecting" });
+      const ok = await this.startStreamMode(deps.reportChannelStatus);
+      if (!ok && !this.stopped) {
         deps.reportChannelStatus?.("feishu", { state: "failed", message: "feishu: stream connection failed" });
-      } else {
-        const connected = this.wsClient?.getConnectionStatus?.().state === "connected";
-        deps.reportChannelStatus?.("feishu", {
-          state: connected ? "connected" : "starting",
-          message: connected ? "feishu: stream connected" : "feishu: stream client started",
-        });
       }
     } else {
       deps.reportChannelStatus?.("feishu", { state: "connected", message: "feishu: webhook ready" });
@@ -288,7 +283,7 @@ export class FeishuChannel implements ChannelAdapter {
     }
   }
 
-  private async startStreamMode(): Promise<boolean> {
+  private async startStreamMode(reportStatus: ChannelStartDeps["reportChannelStatus"]): Promise<boolean> {
     const sdk = await loadLarkSdk();
     if (!sdk) {
       this.logger?.error?.(
@@ -313,17 +308,30 @@ export class FeishuChannel implements ChannelAdapter {
           ? sdk.Domain?.Lark ?? "https://open.larksuite.com"
           : sdk.Domain?.Feishu ?? "https://open.feishu.cn";
 
-      this.wsClient = new sdk.WSClient({
+      const report = (state: "connected" | "starting" | "failed", message: string, error?: unknown) => {
+        if (this.stopped || this.wsClient !== client) return;
+        reportStatus?.("feishu", {
+          state,
+          message,
+          ...(error !== undefined ? { error: formatError(error) } : {}),
+        });
+      };
+      const client = new sdk.WSClient({
         appId: this.appId,
         appSecret: this.appSecret,
         domain,
         loggerLevel: sdk.LoggerLevel?.info ?? 2,
+        onReady: () => report("connected", "feishu: stream connected"),
+        onError: (error: unknown) => report("failed", "feishu: stream connection failed", error),
+        onReconnecting: () => report("starting", "feishu: stream reconnecting"),
+        onReconnected: () => report("connected", "feishu: stream connected"),
       });
+      this.wsClient = client;
 
-      await this.wsClient.start({ eventDispatcher: dispatcher });
-      const state = this.wsClient.getConnectionStatus?.().state;
+      await client.start({ eventDispatcher: dispatcher });
+      const state = client.getConnectionStatus?.().state;
       if (state === "failed" || state === "idle") return false;
-      this.logger?.info?.(`feishu: stream mode connected (appId=${maskAppId(this.appId)})`);
+      this.logger?.info?.(`feishu: stream client started (appId=${maskAppId(this.appId)})`);
       return true;
     } catch (e) {
       this.logger?.error?.(`feishu: stream mode start failed: ${e}`);
