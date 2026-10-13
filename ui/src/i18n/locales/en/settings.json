@@ -1661,7 +1661,7 @@
     "slack": {
       "title": "Slack",
       "summary": "Chat with the agent in Slack DMs, or @mention it in channels",
-      "guide": "1. Create an app at api.slack.com/apps and turn on Socket Mode (no public URL needed).\n2. Create an App-Level Token with the connections:write scope.\n3. Add bot scopes: chat:write, app_mentions:read, im:history (plus channels:history to follow threads, reactions:write for the 👀 receipt).\n4. Subscribe to bot events app_mention and message.im (plus message.channels), then install the app and copy the Bot User OAuth Token.\nTip: Slack reserves \"/\" for its own commands — use !new to start a fresh session.",
+      "guide": "1. Create an app at api.slack.com/apps and turn on Socket Mode (no public URL needed).\n2. Create an App-Level Token with the connections:write scope.\n3. Add bot scopes: chat:write, app_mentions:read, im:history (plus channels:history / groups:history to follow threads in public / private channels, reactions:write for the 👀 receipt).\n4. Subscribe to bot events app_mention and message.im (plus message.channels / message.groups).\n5. Under App Home, turn on the Messages Tab and tick \"Allow users to send Slash commands and messages from the messages tab\" — otherwise Slack blocks DMs to the bot. Then install the app and copy the Bot User OAuth Token.\nTip: Slack reserves \"/\" for its own commands — use !new to start a fresh session.",
       "botToken": "Bot User OAuth Token",
       "botTokenHint": "OAuth & Permissions → Bot User OAuth Token (xoxb-…)",
       "appToken": "App-Level Token",

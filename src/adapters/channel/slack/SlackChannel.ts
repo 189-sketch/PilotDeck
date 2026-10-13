@@ -14,7 +14,7 @@ import {
   ENGLISH_NEW_SESSION_TEXT,
   ENGLISH_SUBMIT_FAILED_TEXT,
 } from "../protocol/englishLiveReplyText.js";
-import { SlackSessionMapper } from "./SlackSessionMapper.js";
+import { SlackSessionMapper, type SlackSessionMapperState } from "./SlackSessionMapper.js";
 
 /**
  * Slack channel over Socket Mode, implemented directly on the Web API + a
@@ -46,6 +46,8 @@ export type SlackChannelOptions = {
   botToken?: string;
   appToken?: string;
   mapper?: SlackSessionMapper;
+  /** Called after /new so the active session per chat survives restarts. */
+  onStateChange?: (state: SlackSessionMapperState) => void;
   /** Override for tests or a corporate proxy that fronts slack.com/api. */
   apiBaseUrl?: string;
   permissionMode?: "default" | "bypassPermissions";
@@ -82,6 +84,7 @@ export class SlackChannel implements ChannelAdapter {
   readonly channelKey: GatewayChannelKey = "slack";
 
   private readonly mapper: SlackSessionMapper;
+  private readonly onStateChange?: (state: SlackSessionMapperState) => void;
   private botToken?: string;
   private appToken?: string;
   private readonly apiBaseUrl: string;
@@ -111,6 +114,7 @@ export class SlackChannel implements ChannelAdapter {
 
   constructor(options: SlackChannelOptions = {}) {
     this.mapper = options.mapper ?? new SlackSessionMapper();
+    this.onStateChange = options.onStateChange;
     this.botToken = options.botToken ?? process.env.SLACK_BOT_TOKEN;
     this.appToken = options.appToken ?? process.env.SLACK_APP_TOKEN;
     this.apiBaseUrl = (options.apiBaseUrl ?? process.env.SLACK_API_BASE_URL ?? SLACK_API_BASE).replace(/\/+$/, "");
@@ -192,6 +196,9 @@ export class SlackChannel implements ChannelAdapter {
       this.scheduleReconnect();
       return;
     }
+    // stop() may have run while apps.connections.open was in flight; opening a
+    // socket now would leave a stray connection that keeps receiving events.
+    if (this.stopped) return;
 
     await new Promise<void>((resolve) => {
       const ws = new WebSocket(url);
@@ -217,6 +224,11 @@ export class SlackChannel implements ChannelAdapter {
         if (frame.type === "hello") {
           greeted = true;
           clearTimeout(helloTimer);
+          if (this.stopped || this.ws !== ws) {
+            try { ws.close(1000, "stopping"); } catch { /* best effort */ }
+            resolve();
+            return;
+          }
           this.reconnectAttempt = 0;
           this.logger?.info?.("slack: Socket Mode connected");
           this.report("connected", `slack: connected as @${this.botName ?? this.botUserId ?? "bot"}`);
@@ -271,6 +283,9 @@ export class SlackChannel implements ChannelAdapter {
   }
 
   private handleFrame(ws: WebSocket, frame: SocketFrame): void {
+    // A stopped channel must not ack: unacknowledged envelopes are redelivered
+    // to the connection that replaces it (e.g. after a hot reload).
+    if (this.stopped) return;
     // Ack first: Slack retries envelopes that are not acknowledged within 3s.
     if (typeof frame.envelope_id === "string") {
       try {
@@ -351,6 +366,7 @@ export class SlackChannel implements ChannelAdapter {
     const previousSessionKey = this.mapper.resolve({ chatId, text: "" }).sessionKey;
     const mapped = this.mapper.resolve({ chatId, text: commandText });
     if (mapped.command === "new") {
+      this.onStateChange?.(this.mapper.snapshot());
       const activeRun = this.chatState.activeRun(chatId);
       this.chatState.resetForNewSession(chatId);
       this.elicitation.clear(chatId);
@@ -373,7 +389,10 @@ export class SlackChannel implements ChannelAdapter {
         chatId,
         channelKey: "slack",
         reply: (msg) => this.sendText(ctx, msg).then(() => undefined),
-        resetSession: () => { this.mapper.resolve({ chatId, text: "/new" }); },
+        resetSession: () => {
+          this.mapper.resolve({ chatId, text: "/new" });
+          this.onStateChange?.(this.mapper.snapshot());
+        },
         logger: this.logger,
       });
       if (handled) return;

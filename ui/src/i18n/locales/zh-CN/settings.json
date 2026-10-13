@@ -1655,7 +1655,7 @@
     "slack": {
       "title": "Slack",
       "summary": "在 Slack 私聊中使用 Agent，或在频道里 @ 它",
-      "guide": "1. 在 api.slack.com/apps 创建应用并开启 Socket Mode（无需公网地址）。\n2. 创建带 connections:write 权限的 App-Level Token。\n3. 添加 Bot 权限：chat:write、app_mentions:read、im:history（跟进线程需 channels:history，👀 已读回执需 reactions:write）。\n4. 订阅 Bot 事件 app_mention 和 message.im（以及 message.channels），安装应用后复制 Bot User OAuth Token。\n提示：Slack 会把 \"/\" 开头的消息当作自身命令，请用 !new 开启新会话。",
+      "guide": "1. 在 api.slack.com/apps 创建应用并开启 Socket Mode（无需公网地址）。\n2. 创建带 connections:write 权限的 App-Level Token。\n3. 添加 Bot 权限：chat:write、app_mentions:read、im:history（在公开 / 私有频道跟进线程需 channels:history / groups:history，👀 已读回执需 reactions:write）。\n4. 订阅 Bot 事件 app_mention 和 message.im（以及 message.channels / message.groups）。\n5. 在 App Home 中开启 Messages Tab，并勾选 \"Allow users to send Slash commands and messages from the messages tab\"，否则 Slack 会禁止用户私聊机器人。然后安装应用并复制 Bot User OAuth Token。\n提示：Slack 会把 \"/\" 开头的消息当作自身命令，请用 !new 开启新会话。",
       "botToken": "Bot User OAuth Token",
       "botTokenHint": "OAuth & Permissions → Bot User OAuth Token（xoxb-…）",
       "appToken": "App-Level Token",
