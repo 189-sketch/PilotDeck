@@ -8,6 +8,7 @@ import {
   Radio,
   type LucideIcon,
 } from 'lucide-react';
+import type { ConversationSkill } from '../../contexts/SkillConversationContext';
 import type {
   AlwaysOnDashboardEvent,
   AlwaysOnDashboardEventsResponse,
@@ -113,24 +114,29 @@ function SkillsArea({
   onOpenSidebar,
   selectedProject,
   projects,
+  onSkillsProjectChange,
+  onUseSkill,
 }: {
   isSidebarCollapsed?: boolean;
   onOpenSidebar?: () => void;
   selectedProject: Project | null;
   projects: Project[];
+  onSkillsProjectChange?: (project: Project | null) => void;
+  onUseSkill?: (skill: ConversationSkill, project: Project | null) => void;
 }) {
-  const { t } = useTranslation();
-
   return (
-    <DedicatedWorkspacePage
-      title={t('sidebar:quickActions.skills', { defaultValue: 'Skills' })}
-      isSidebarCollapsed={isSidebarCollapsed}
-      onOpenSidebar={onOpenSidebar}
-    >
+    <div className="pd-workspace-content relative flex h-full min-h-0 min-w-0 flex-col bg-white dark:bg-neutral-950">
       <Suspense fallback={<PageFallback />}>
-        <SkillsV2 selectedProject={selectedProject} projects={projects} />
+        <SkillsV2
+          onProjectChange={onSkillsProjectChange}
+          onUseSkill={onUseSkill}
+          selectedProject={selectedProject}
+          projects={projects}
+          isSidebarCollapsed={isSidebarCollapsed}
+          onOpenSidebar={onOpenSidebar}
+        />
       </Suspense>
-    </DedicatedWorkspacePage>
+    </div>
   );
 }
 
@@ -169,6 +175,8 @@ const getBadgeEventMarker = (events: AlwaysOnDashboardEvent[]): string | null =>
 // V2 main shell: breadcrumb on the left, tool switcher on the right, and the
 // active tool's content below. The sidebar stays focused on projects+sessions.
 type MainAreaV2Props = MainContentProps & {
+  onSkillsProjectChange?: (project: Project | null) => void;
+  onUseSkill?: (skill: ConversationSkill, project: Project | null) => void;
   selectedProject: Project | null;
   selectedSession: ProjectSession | null;
   activeTab: AppTab;
@@ -583,6 +591,8 @@ export default function MainAreaV2(props: MainAreaV2Props) {
   if (props.activeTab === 'skills') {
     return (
       <SkillsArea
+        onSkillsProjectChange={props.onSkillsProjectChange}
+        onUseSkill={props.onUseSkill}
         isSidebarCollapsed={props.isSidebarCollapsed}
         onOpenSidebar={props.onOpenSidebar}
         selectedProject={props.selectedProject}

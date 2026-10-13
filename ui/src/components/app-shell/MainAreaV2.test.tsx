@@ -78,7 +78,7 @@ vi.mock('../main-content-v2/CronV2', () => ({
 }));
 
 vi.mock('../main-content-v2/SkillsV2', () => ({
-  default: () => <div data-testid="skills-page" />,
+  default: () => <div data-testid="skills-page"><h1>Skills</h1></div>,
 }));
 
 const project: Project = {
@@ -318,7 +318,7 @@ describe('MainAreaV2 dashboard switcher', () => {
     expect(screen.queryByRole('button', { name: 'Open dashboards menu' })).toBeNull();
   });
 
-  it('replaces the workspace header with only the skills title', async () => {
+  it('lets the skills workbench own its header', async () => {
     render(<Harness initialTab="skills" withSession />);
 
     expect(await screen.findByRole('heading', { name: 'Skills' })).toBeTruthy();

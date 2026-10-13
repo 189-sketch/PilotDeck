@@ -1,3 +1,4 @@
+import { useSkillConversation } from '../../../contexts/SkillConversationContext';
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { getSubmittedCommand, isModelIndependentCommand } from '../utils/composerCommand';
 import { attachmentDisplayMetadata, rememberUploadedPreview } from '../utils/uploadedAttachmentPreview';
@@ -1042,6 +1043,15 @@ export function useChatComposerState({
   useEffect(() => {
     setSelectedSkills([]);
   }, [draftStorageKey]);
+
+  const skillConversation = useSkillConversation();
+  useEffect(() => {
+    const request = skillConversation.request;
+    const projectPath = selectedProject?.fullPath || selectedProject?.path;
+    if (!request || request.projectPath !== projectPath || selectedSession || currentSessionId) return;
+    selectSkill(request.skill);
+    skillConversation.consume(request.id);
+  }, [skillConversation, selectedProject, selectedSession, currentSessionId, selectSkill, draftStorageKey]);
 
   const syncInputOverlayScroll = useCallback((target: HTMLTextAreaElement) => {
     if (!inputHighlightRef.current || !target) {
