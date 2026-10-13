@@ -155,7 +155,7 @@ export class ImLiveReplyController<Handle = ImLiveReplyHandle> {
   private activityDelayTimer: ReturnType<typeof setTimeout> | undefined;
   private activityUpdateTimer: ReturnType<typeof setTimeout> | undefined;
   private inFlight: Promise<void> | undefined;
-  private liveFlushQueued = false;
+  private readonly liveFlushQueued = new Set<Segment<Handle>>();
   private finalizing = false;
   private lastFlushAt = 0;
   private closed = false;
@@ -274,12 +274,20 @@ export class ImLiveReplyController<Handle = ImLiveReplyHandle> {
   }
 
   async pauseActivity(): Promise<void> {
-    this.clearActivityTimers();
+    if (this.closed) return;
+    // Seal even text whose throttle timer has not fired. The final flush is a
+    // barrier behind earlier segments, so prompts cannot overtake buffered text.
+    await this.flushSegment({ finalizeActivityOnly: false });
     await this.stopNativeActivity();
-    // Callers send out-of-band messages (permission / elicitation prompts)
-    // right after pausing. Let queued background flushes land first so those
-    // prompts never appear above the reply text that preceded them.
-    await this.waitForInFlight();
+  }
+
+  /** Stop timers and discard queued delivery work without sending more text. */
+  cancel(): void {
+    this.closed = true;
+    this.clearTextTimer();
+    this.clearTurnTimer();
+    this.clearActivityTimers();
+    this.liveFlushQueued.clear();
   }
 
   async resumeActivity(
@@ -364,6 +372,7 @@ export class ImLiveReplyController<Handle = ImLiveReplyHandle> {
       this.clearActivityTimers();
       await this.stopNativeActivity();
     }
+    if (this.closed) return;
 
     const liveTextLimit = this.liveTextLimit();
     if (liveTextLimit) {
@@ -467,19 +476,22 @@ export class ImLiveReplyController<Handle = ImLiveReplyHandle> {
    * backlog collapses into a single edit.
    */
   private requestLiveFlush(): void {
-    if (this.liveFlushQueued || this.closed) return;
-    this.liveFlushQueued = true;
+    const segment = this.currentSegment;
+    if (this.liveFlushQueued.has(segment) || this.closed) return;
+    this.liveFlushQueued.add(segment);
+    // Coalesce only within this segment. Looking up currentSegment at execution
+    // time can send a later segment ahead of an earlier queued finalization.
     this.runInBackground(async () => {
-      this.liveFlushQueued = false;
-      if (this.closed || this.finalizing) return;
-      if (this.hasVisibleReplyText(this.currentSegment)) {
+      this.liveFlushQueued.delete(segment);
+      if (this.closed || this.finalizing || segment.final) return;
+      if (this.hasVisibleReplyText(segment)) {
         const wait = this.remainingEditInterval();
         if (wait > 0) {
-          this.scheduleTextFlush(wait);
+          if (segment === this.currentSegment) this.scheduleTextFlush(wait);
           return;
         }
       }
-      await this.flushCurrentNow({ final: false, force: false, finalizeActivityOnly: false });
+      await this.flushCurrentNow({ final: false, force: false, finalizeActivityOnly: false }, segment);
     }, "edit");
   }
 
@@ -551,7 +563,7 @@ export class ImLiveReplyController<Handle = ImLiveReplyHandle> {
   }
 
   private scheduleTextFlush(delayMs: number): void {
-    if (this.closed) return;
+    if (this.closed || this.finalizing) return;
     const delay = Math.max(0, delayMs);
     const dueAt = Date.now() + delay;
     if (this.textTimer) {
@@ -643,13 +655,15 @@ export class ImLiveReplyController<Handle = ImLiveReplyHandle> {
   }
 
   private async flushActivity(params: { force: boolean }): Promise<void> {
-    await this.runExclusive(() => this.flushActivityNow(params));
+    const segment = this.currentSegment;
+    await this.runExclusive(() => this.flushActivityNow(params, segment));
   }
 
-  private async flushActivityNow(params: { force: boolean }): Promise<void> {
-    const segment = this.currentSegment;
+  private async flushActivityNow(params: { force: boolean }, segment: Segment<Handle>): Promise<void> {
     if (
       this.closed
+      || segment !== this.currentSegment
+      || segment.final
       || !this.canUseActivity()
       || segment.activityDisabled
       || this.shouldSuppressActivityForText(segment)
@@ -747,7 +761,8 @@ export class ImLiveReplyController<Handle = ImLiveReplyHandle> {
 
   private async flushCurrent(params: { final: boolean; force: boolean; finalizeActivityOnly: boolean }): Promise<void> {
     this.clearTextTimer();
-    await this.runExclusive(() => this.flushCurrentNow(params));
+    const segment = this.currentSegment;
+    await this.runExclusive(() => this.flushCurrentNow(params, segment));
   }
 
   private async finalizeWithTerminalText(text: string): Promise<void> {
@@ -761,18 +776,17 @@ export class ImLiveReplyController<Handle = ImLiveReplyHandle> {
     this.closed = true;
   }
 
-  private async runExclusive(fn: () => Promise<void>): Promise<void> {
-    while (this.inFlight) {
-      await this.inFlight;
-    }
-
-    const current = fn().finally(() => {
-      if (this.inFlight === current) {
-        this.inFlight = undefined;
-      }
+  private runExclusive(fn: () => Promise<void>): Promise<void> {
+    // Publish the tail synchronously: every operation has a fixed FIFO slot,
+    // including segment finalization and permission-prompt barriers.
+    const previous = this.inFlight ?? Promise.resolve();
+    const current = previous.catch(() => undefined).then(async () => {
+      if (!this.closed) await fn();
+    }).finally(() => {
+      if (this.inFlight === current) this.inFlight = undefined;
     });
     this.inFlight = current;
-    await current;
+    return current;
   }
 
   private async waitForInFlight(): Promise<void> {
@@ -980,7 +994,7 @@ export class ImLiveReplyController<Handle = ImLiveReplyHandle> {
   }
 
   private async stripCursorBestEffort(segment: Segment<Handle>): Promise<void> {
-    if (!segment.handle || !this.transport.edit || !this.cursor) return;
+    if (this.closed || !segment.handle || !this.transport.edit || !this.cursor) return;
     if (!segment.lastVisibleText.endsWith(this.cursor)) return;
 
     const clean = segment.lastVisibleText.slice(0, -this.cursor.length);
@@ -1003,6 +1017,7 @@ export class ImLiveReplyController<Handle = ImLiveReplyHandle> {
     }
 
     for (const chunk of this.splitForTransport(continuation)) {
+      if (this.closed) return;
       try {
         const handle = await this.transport.send(chunk);
         if (handle === false) {
@@ -1039,6 +1054,7 @@ export class ImLiveReplyController<Handle = ImLiveReplyHandle> {
 
   private async sendFinalChunks(segment: Segment<Handle>, finalText: string): Promise<void> {
     for (const chunk of this.splitForTransport(finalText)) {
+      if (this.closed) return;
       try {
         const handle = await this.transport.send(chunk);
         if (handle === false) {

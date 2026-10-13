@@ -109,6 +109,8 @@ export class TelegramChannel implements ChannelAdapter {
   private reportStatus?: ChannelRuntimeStatusReporter;
 
   private stopped = true;
+  private readonly stopAbort = new AbortController();
+  private readonly activeReplies = new Map<string, ImLiveReplyController<TelegramMessageHandle>>();
   private pollAbort: AbortController | null = null;
   private pollLoop: Promise<void> | null = null;
   private offset = 0;
@@ -167,11 +169,45 @@ export class TelegramChannel implements ChannelAdapter {
       stop: async (reason?: string) => {
         this.logger?.info?.(`telegram: stopping (${reason ?? "no reason"})`);
         this.stopped = true;
+        this.stopAbort.abort();
+        const aborts = this.cancelActiveTurns(reason);
         this.pollAbort?.abort();
         await this.pollLoop?.catch(() => undefined);
         this.pollLoop = null;
+        await aborts;
       },
     };
+  }
+
+  private async cancelActiveTurns(reason?: string): Promise<void> {
+    const aborts: Promise<void>[] = [];
+    for (const chatId of this.activeChats) {
+      const run = this.chatState.activeRun(chatId);
+      this.chatState.resetForNewSession(chatId);
+      this.elicitation.clear(chatId);
+      this.permissions.clear(chatId);
+      this.activeReplies.get(chatId)?.cancel();
+      if (run && this.gateway) {
+        aborts.push(this.gateway.abortTurn({
+          sessionKey: run.sessionKey,
+          ...(run.runId ? { runId: run.runId } : {}),
+          reason: reason ?? "channel stopped",
+        }).catch((error: unknown) => {
+          this.logger?.warn?.(`telegram: abort on stop failed: ${formatError(error)}`);
+        }));
+      }
+    }
+    this.activeReplies.clear();
+    // A remote gateway may be unreachable; never hold hot reload indefinitely.
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        Promise.all(aborts),
+        new Promise<void>((resolve) => { timer = setTimeout(resolve, 5_000); }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
   }
 
   async deliverCronResult(delivery: CronResultDelivery): Promise<boolean> {
@@ -220,7 +256,15 @@ export class TelegramChannel implements ChannelAdapter {
         if (failures === 3) {
           this.report("failed", conflict ? "telegram: token is in use by another bot process" : "telegram: cannot reach Telegram", formatError(error));
         }
-        await sleep(delay);
+        await new Promise<void>((resolve) => {
+          if (this.stopped) return resolve();
+          const onStop = () => { clearTimeout(timer); resolve(); };
+          const timer = setTimeout(() => {
+            this.stopAbort.signal.removeEventListener("abort", onStop);
+            resolve();
+          }, delay);
+          this.stopAbort.signal.addEventListener("abort", onStop, { once: true });
+        });
       }
     }
   }
@@ -228,6 +272,7 @@ export class TelegramChannel implements ChannelAdapter {
   // ─── Inbound ───────────────────────────────────────────────────────────────
 
   private async handleMessage(msg: TelegramMessage): Promise<void> {
+    if (this.stopped) return;
     if (!msg.from || msg.from.is_bot) return;
     const rawText = msg.text ?? msg.caption ?? "";
     if (!rawText.trim()) return;
@@ -299,7 +344,7 @@ export class TelegramChannel implements ChannelAdapter {
       if (handled) return;
     }
 
-    if (!mapped.message) return;
+    if (!mapped.message || this.stopped) return;
 
     const turn: QueuedTelegramTurn = {
       sessionKey: mapped.sessionKey,
@@ -318,7 +363,7 @@ export class TelegramChannel implements ChannelAdapter {
     this.activeChats.add(chatId);
     try {
       let next: QueuedTelegramTurn | undefined = turn;
-      while (next) {
+      while (next && !this.stopped) {
         await this.processTurn(chatId, next);
         next = this.chatState.shiftTurn(chatId);
       }
@@ -381,7 +426,7 @@ export class TelegramChannel implements ChannelAdapter {
 
   private async processTurn(chatId: string, turn: QueuedTelegramTurn): Promise<void> {
     if (!this.gateway) return;
-    const isCurrentTurn = () => this.chatState.isCurrent(chatId, turn.generation);
+    const isCurrentTurn = () => !this.stopped && this.chatState.isCurrent(chatId, turn.generation);
     if (!isCurrentTurn()) return;
 
     void this.api("sendChatAction", {
@@ -391,7 +436,7 @@ export class TelegramChannel implements ChannelAdapter {
     }).catch(() => undefined);
 
     const liveReply = new ImLiveReplyController<TelegramMessageHandle>({
-      transport: this.createLiveTransport(turn.ctx),
+      transport: this.createLiveTransport(turn.ctx, isCurrentTurn),
       throttleMs: 1_500,
       minEditIntervalMs: turn.ctx.isGroup ? GROUP_MIN_EDIT_INTERVAL_MS : PRIVATE_MIN_EDIT_INTERVAL_MS,
       turnTimeoutMs: TURN_TIMEOUT_MS,
@@ -401,6 +446,9 @@ export class TelegramChannel implements ChannelAdapter {
       },
     });
 
+    this.activeReplies.set(chatId, liveReply);
+    // Track the session before submitTurn yields so stop can abort startup too.
+    this.chatState.setActiveRun(chatId, { sessionKey: turn.sessionKey, generation: turn.generation });
     try {
       for await (const event of this.gateway.submitTurn({
         sessionKey: turn.sessionKey,
@@ -410,7 +458,13 @@ export class TelegramChannel implements ChannelAdapter {
         timeoutMs: TURN_TIMEOUT_MS,
         ...(this.permissionMode ? { mode: this.permissionMode, basePermissionMode: this.permissionMode } : {}),
       })) {
-        if (!isCurrentTurn()) break;
+        if (!isCurrentTurn()) {
+          // A run can be created after stop/reset raced submitTurn startup.
+          if (event.type === "turn_started") {
+            void this.gateway.abortTurn({ sessionKey: turn.sessionKey, runId: event.runId }).catch(() => undefined);
+          }
+          break;
+        }
         if (event.type === "turn_started") {
           this.chatState.setActiveRun(chatId, { sessionKey: turn.sessionKey, runId: event.runId, generation: turn.generation });
         }
@@ -439,6 +493,7 @@ export class TelegramChannel implements ChannelAdapter {
         await liveReply.handleEvent(event);
       }
     } catch (error) {
+      if (!isCurrentTurn()) return;
       this.logger?.error?.(`telegram: submitTurn error: ${formatError(error)}`);
       await liveReply.handleEvent({
         type: "error",
@@ -451,30 +506,34 @@ export class TelegramChannel implements ChannelAdapter {
         this.elicitation.clear(chatId);
         this.permissions.clearAfterTurn(chatId);
       }
-      await liveReply.flushFinal();
+      if (isCurrentTurn()) await liveReply.flushFinal();
+      else liveReply.cancel();
+      if (this.activeReplies.get(chatId) === liveReply) this.activeReplies.delete(chatId);
       const activeRun = this.chatState.activeRun(chatId);
       if (activeRun?.generation === turn.generation) this.chatState.clearActiveRun(chatId);
     }
   }
 
-  private createLiveTransport(ctx: TelegramReplyContext): ImLiveReplyTransport<TelegramMessageHandle> {
+  private createLiveTransport(ctx: TelegramReplyContext, isCurrent: () => boolean): ImLiveReplyTransport<TelegramMessageHandle> {
     let replyAttached = false;
     return {
       maxMessageLength: MAX_MESSAGE_LENGTH,
       send: async (text) => {
+        if (!isCurrent()) return false;
         // Only the first message of a reply quotes the user's message.
         const messageId = await this.sendMessage(replyAttached ? { ...ctx, replyToMessageId: undefined } : ctx, text);
         if (messageId === undefined) return false;
         replyAttached = true;
         return { chatId: ctx.chatId, messageId };
       },
-      edit: async (handle, text) => this.editMessage(handle, text),
+      edit: async (handle, text) => isCurrent() && this.editMessage(handle, text),
     };
   }
 
   // ─── Outbound ──────────────────────────────────────────────────────────────
 
   private async sendText(ctx: TelegramReplyContext, text: string): Promise<boolean> {
+    if (this.stopAbort.signal.aborted) return false;
     let delivered = true;
     for (const chunk of chunkText(text, MAX_MESSAGE_LENGTH)) {
       if ((await this.sendMessage(ctx, chunk)) === undefined) delivered = false;
@@ -540,7 +599,7 @@ export class TelegramChannel implements ChannelAdapter {
     options: { signal?: AbortSignal; timeoutMs?: number } = {},
   ): Promise<T> {
     const timeout = AbortSignal.timeout(options.timeoutMs ?? 20_000);
-    const signal = options.signal ? AbortSignal.any([options.signal, timeout]) : timeout;
+    const signal = AbortSignal.any([this.stopAbort.signal, timeout, ...(options.signal ? [options.signal] : [])]);
     const res = await fetch(`${this.apiBaseUrl}/bot${this.token}/${method}`, {
       method: "POST",
       headers: { "Content-Type": "application/json; charset=utf-8" },

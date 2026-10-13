@@ -96,6 +96,8 @@ export class SlackChannel implements ChannelAdapter {
 
   private ws: WebSocket | null = null;
   private stopped = true;
+  private readonly stopAbort = new AbortController();
+  private readonly activeReplies = new Map<string, ImLiveReplyController<SlackMessageHandle>>();
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private pingTimer: ReturnType<typeof setInterval> | null = null;
   private reconnectAttempt = 0;
@@ -160,6 +162,8 @@ export class SlackChannel implements ChannelAdapter {
       stop: async (reason?: string) => {
         this.logger?.info?.(`slack: stopping (${reason ?? "no reason"})`);
         this.stopped = true;
+        this.stopAbort.abort();
+        const aborts = this.cancelActiveTurns(reason);
         if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
         this.reconnectTimer = null;
         if (this.pingTimer) clearInterval(this.pingTimer);
@@ -169,8 +173,40 @@ export class SlackChannel implements ChannelAdapter {
         if (ws) {
           try { ws.close(1000, "stopping"); } catch { /* best effort */ }
         }
+        await aborts;
       },
     };
+  }
+
+  private async cancelActiveTurns(reason?: string): Promise<void> {
+    const aborts: Promise<void>[] = [];
+    for (const chatId of this.activeChats) {
+      const run = this.chatState.activeRun(chatId);
+      this.chatState.resetForNewSession(chatId);
+      this.elicitation.clear(chatId);
+      this.permissions.clear(chatId);
+      this.activeReplies.get(chatId)?.cancel();
+      if (run && this.gateway) {
+        aborts.push(this.gateway.abortTurn({
+          sessionKey: run.sessionKey,
+          ...(run.runId ? { runId: run.runId } : {}),
+          reason: reason ?? "channel stopped",
+        }).catch((error: unknown) => {
+          this.logger?.warn?.(`slack: abort on stop failed: ${formatError(error)}`);
+        }));
+      }
+    }
+    this.activeReplies.clear();
+    // A remote gateway may be unreachable; never hold hot reload indefinitely.
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        Promise.all(aborts),
+        new Promise<void>((resolve) => { timer = setTimeout(resolve, 5_000); }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
   }
 
   async deliverCronResult(delivery: CronResultDelivery): Promise<boolean> {
@@ -318,6 +354,7 @@ export class SlackChannel implements ChannelAdapter {
   // ─── Inbound messages ──────────────────────────────────────────────────────
 
   private async handleEvent(event: SlackEvent): Promise<void> {
+    if (this.stopped) return;
     if (event.type !== "message" && event.type !== "app_mention") return;
     if (event.bot_id || event.subtype === "bot_message") return;
     if (event.subtype && event.subtype !== "file_share" && event.subtype !== "thread_broadcast") return;
@@ -398,7 +435,7 @@ export class SlackChannel implements ChannelAdapter {
       if (handled) return;
     }
 
-    if (!mapped.message) return;
+    if (!mapped.message || this.stopped) return;
 
     const turn: QueuedSlackTurn = {
       sessionKey: mapped.sessionKey,
@@ -418,7 +455,7 @@ export class SlackChannel implements ChannelAdapter {
     this.activeChats.add(chatId);
     try {
       let next: QueuedSlackTurn | undefined = turn;
-      while (next) {
+      while (next && !this.stopped) {
         await this.processTurn(chatId, next);
         next = this.chatState.shiftTurn(chatId);
       }
@@ -456,12 +493,12 @@ export class SlackChannel implements ChannelAdapter {
 
   private async processTurn(chatId: string, turn: QueuedSlackTurn): Promise<void> {
     if (!this.gateway) return;
-    const isCurrentTurn = () => this.chatState.isCurrent(chatId, turn.generation);
+    const isCurrentTurn = () => !this.stopped && this.chatState.isCurrent(chatId, turn.generation);
     if (!isCurrentTurn()) return;
 
     const receipt = turn.sourceTs ? this.addReaction(turn.ctx.channelId, turn.sourceTs) : Promise.resolve(false);
     const liveReply = new ImLiveReplyController<SlackMessageHandle>({
-      transport: this.createLiveTransport(turn.ctx),
+      transport: this.createLiveTransport(turn.ctx, isCurrentTurn),
       throttleMs: 1_500,
       minEditIntervalMs: 1_000,
       turnTimeoutMs: TURN_TIMEOUT_MS,
@@ -471,6 +508,9 @@ export class SlackChannel implements ChannelAdapter {
       },
     });
 
+    this.activeReplies.set(chatId, liveReply);
+    // Track the session before submitTurn yields so stop can abort startup too.
+    this.chatState.setActiveRun(chatId, { sessionKey: turn.sessionKey, generation: turn.generation });
     try {
       for await (const event of this.gateway.submitTurn({
         sessionKey: turn.sessionKey,
@@ -480,7 +520,13 @@ export class SlackChannel implements ChannelAdapter {
         timeoutMs: TURN_TIMEOUT_MS,
         ...(this.permissionMode ? { mode: this.permissionMode, basePermissionMode: this.permissionMode } : {}),
       })) {
-        if (!isCurrentTurn()) break;
+        if (!isCurrentTurn()) {
+          // A run can be created after stop/reset raced submitTurn startup.
+          if (event.type === "turn_started") {
+            void this.gateway.abortTurn({ sessionKey: turn.sessionKey, runId: event.runId }).catch(() => undefined);
+          }
+          break;
+        }
         if (event.type === "turn_started") {
           this.chatState.setActiveRun(chatId, { sessionKey: turn.sessionKey, runId: event.runId, generation: turn.generation });
         }
@@ -509,6 +555,7 @@ export class SlackChannel implements ChannelAdapter {
         await liveReply.handleEvent(event as GatewayEvent);
       }
     } catch (error) {
+      if (!isCurrentTurn()) return;
       this.logger?.error?.(`slack: submitTurn error: ${formatError(error)}`);
       await liveReply.handleEvent({
         type: "error",
@@ -521,7 +568,9 @@ export class SlackChannel implements ChannelAdapter {
         this.elicitation.clear(chatId);
         this.permissions.clearAfterTurn(chatId);
       }
-      await liveReply.flushFinal();
+      if (isCurrentTurn()) await liveReply.flushFinal();
+      else liveReply.cancel();
+      if (this.activeReplies.get(chatId) === liveReply) this.activeReplies.delete(chatId);
       const activeRun = this.chatState.activeRun(chatId);
       if (activeRun?.generation === turn.generation) this.chatState.clearActiveRun(chatId);
       if (turn.sourceTs) {
@@ -531,15 +580,16 @@ export class SlackChannel implements ChannelAdapter {
     }
   }
 
-  private createLiveTransport(ctx: SlackReplyContext): ImLiveReplyTransport<SlackMessageHandle> {
+  private createLiveTransport(ctx: SlackReplyContext, isCurrent: () => boolean): ImLiveReplyTransport<SlackMessageHandle> {
     return {
       maxMessageLength: MAX_MESSAGE_LENGTH,
       formatText: toSlackMrkdwn,
       send: async (text) => {
+        if (!isCurrent()) return false;
         const ts = await this.postMessage(ctx, text);
         return ts ? { channelId: ctx.channelId, ts } : false;
       },
-      edit: async (handle, text) => this.updateMessage(handle, text),
+      edit: async (handle, text) => isCurrent() && this.updateMessage(handle, text),
     };
   }
 
@@ -547,6 +597,7 @@ export class SlackChannel implements ChannelAdapter {
 
   /** Post plain (already formatted or user-facing) text, split to Slack's size. */
   private async sendText(ctx: SlackReplyContext, text: string): Promise<boolean> {
+    if (this.stopAbort.signal.aborted) return false;
     let delivered = true;
     for (const chunk of chunkText(toSlackMrkdwn(text), MAX_MESSAGE_LENGTH)) {
       if (!(await this.postMessage(ctx, chunk))) delivered = false;
@@ -626,7 +677,7 @@ export class SlackChannel implements ChannelAdapter {
         Authorization: `Bearer ${token ?? ""}`,
       },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(20_000),
+      signal: AbortSignal.any([this.stopAbort.signal, AbortSignal.timeout(20_000)]),
     });
     const json = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string } & T;
     if (res.status === 429 || json.error === "ratelimited") {
