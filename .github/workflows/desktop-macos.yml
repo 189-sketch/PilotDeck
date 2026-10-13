@@ -102,6 +102,8 @@ jobs:
           pnpm --dir ui exec vitest run
           server/services/computerUse.test.js
           server/services/standaloneComputerUse.test.js
+          server/services/macComputerUseRuntime.test.js
+          server/services/macComputerUsePermissions.test.js
           server/routes/computer-use.test.js
 
       - name: Verify macOS background and quit lifecycle
@@ -168,6 +170,7 @@ jobs:
           test "$(lipo -archs "$app_path/Contents/Resources/node/bin/node")" = "$MACH_ARCH"
           "$app_path/Contents/Resources/node/bin/node" apps/desktop/scripts/verify-cua-driver.cjs "$app_path/Contents/Resources" "$MACOS_ARCH"
           codesign --verify --strict "$app_path/Contents/Resources/runtime/resources/cua-driver/PilotDeck Computer Use.app"
+          "$app_path/Contents/Resources/node/bin/node" apps/desktop/scripts/verify-mac-permission-probe.mjs "$app_path/Contents/Resources/runtime/resources/cua-driver"
           native_path="$(find "$app_path/Contents/Resources/runtime/node_modules/better-sqlite3" -name '*.node' -print -quit)"
           test -n "$native_path"
           test "$(lipo -archs "$native_path")" = "$MACH_ARCH"
