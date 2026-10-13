@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { useState } from 'react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import enCommon from '../../i18n/locales/en/common.json';
 import SkillsV2 from './SkillsV2';
@@ -510,4 +511,173 @@ it('keeps the chosen document when general context finishes loading', async () =
     expect(mocks.fetch.mock.calls.filter(([url]) => url.endsWith('/list')).length).toBe(2),
   );
   expect(screen.getByRole('region', { name: 'Skill details: Other skill' })).toBeTruthy();
+});
+
+function pendingRequest() {
+  let resolve!: (value: ReturnType<typeof response>) => void;
+  const promise = new Promise<ReturnType<typeof response>>((finish) => {
+    resolve = finish;
+  });
+  return { promise, resolve };
+}
+
+const otherProject = { name: 'other', displayName: 'Other', fullPath: '/other' };
+function ProjectSwitchHarness() {
+  const [selected, setSelected] = useState(project);
+  return (
+    <SkillsV2
+      selectedProject={selected}
+      projects={[project, otherProject]}
+      onProjectChange={(next) => setSelected(next ?? project)}
+    />
+  );
+}
+function mockProjectSwitch(
+  pending: ReturnType<typeof pendingRequest>,
+  operation: 'delete' | 'move',
+) {
+  const otherDefault = {
+    ...projectSkill,
+    slug: 'b-default',
+    name: 'B default',
+    skillDir: '/other/.pilotdeck/skills/b-default',
+  };
+  const otherChosen = {
+    ...projectSkill,
+    slug: 'race-work',
+    name: 'B workflow',
+    skillDir: '/other/.pilotdeck/skills/race-work',
+  };
+  const projectA = {
+    ...list,
+    builtin: [],
+    project: [
+      { ...projectSkill, slug: 'race-work', skillDir: '/project/.pilotdeck/skills/race-work' },
+    ],
+  };
+  const projectB = {
+    ...list,
+    builtin: [],
+    project: [otherDefault, otherChosen],
+    projectPath: '/other',
+  };
+  mocks.fetch.mockImplementation(async (url: string, options: { body: string }) => {
+    const body = JSON.parse(options.body);
+    if (url.endsWith('/list')) return response(body.projectPath === '/other' ? projectB : projectA);
+    if (url.endsWith('/read')) return response({ content: '# Instructions' });
+    if (operation === 'delete' && url.endsWith('/delete')) return pending.promise;
+    if (operation === 'move' && url.endsWith('/import')) return pending.promise;
+    return response({ ok: true });
+  });
+}
+async function chooseBWorkflow() {
+  fireEvent.change(screen.getByRole('combobox', { name: 'Switch skill project' }), {
+    target: { value: 'other' },
+  });
+  fireEvent.click(await screen.findByRole('button', { name: /B workflow Shared across projects/ }));
+  await screen.findByRole('region', { name: 'Skill details: B workflow' });
+  await waitFor(() =>
+    expect((screen.getByRole('button', { name: 'Edit' }) as HTMLButtonElement).disabled).toBe(
+      false,
+    ),
+  );
+}
+
+it.each([
+  ['detail', true],
+  ['menu', true],
+  ['detail', false],
+  ['menu', false],
+] as const)(
+  'ignores a late project A %s deletion completion after selecting project B (success=%s)',
+  async (entry, success) => {
+    const pending = pendingRequest();
+    mockProjectSwitch(pending, 'delete');
+    render(<ProjectSwitchHarness />);
+    await screen.findByRole('region', { name: 'Skill details: Project workflow' });
+    if (entry === 'detail') fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+    else {
+      fireEvent.click(screen.getByRole('button', { name: 'Manage Project workflow' }));
+      fireEvent.click(screen.getByRole('menuitem', { name: 'Delete' }));
+    }
+    await waitFor(() =>
+      expect(mocks.fetch.mock.calls.some(([url]) => url.endsWith('/delete'))).toBe(true),
+    );
+    await chooseBWorkflow();
+    await act(async () => {
+      pending.resolve(
+        response(success ? { ok: true } : { error: 'Project A deletion failed' }, success),
+      );
+    });
+    expect(screen.getByRole('region', { name: 'Skill details: B workflow' })).toBeTruthy();
+    expect(
+      (screen.getByRole('combobox', { name: 'Switch skill project' }) as HTMLSelectElement).value,
+    ).toBe('other');
+    expect(
+      mocks.fetch.mock.calls.filter(
+        ([url, options]) =>
+          url.endsWith('/list') && JSON.parse(options.body).projectPath === '/project',
+      ),
+    ).toHaveLength(1);
+    expect(screen.queryByText('Project A deletion failed')).toBeNull();
+    expect(screen.queryByText('Deleted', { selector: '[role="status"]' })).toBeNull();
+  },
+);
+
+it('finishes an old project move without clearing the chosen skill in the new project', async () => {
+  const pending = pendingRequest();
+  mockProjectSwitch(pending, 'move');
+  render(<ProjectSwitchHarness />);
+  await screen.findByRole('region', { name: 'Skill details: Project workflow' });
+  fireEvent.click(screen.getByRole('button', { name: 'Manage Project workflow' }));
+  fireEvent.click(screen.getByRole('menuitem', { name: 'Move to…' }));
+  fireEvent.click(screen.getByRole('menuitem', { name: 'Global skills' }));
+  await waitFor(() =>
+    expect(mocks.fetch.mock.calls.some(([url]) => url.endsWith('/import'))).toBe(true),
+  );
+  await chooseBWorkflow();
+  await act(async () => {
+    pending.resolve(response({ ok: true }));
+  });
+  expect(screen.getByRole('region', { name: 'Skill details: B workflow' })).toBeTruthy();
+  const deletion = mocks.fetch.mock.calls.find(([url]) => url.endsWith('/delete'));
+  expect(JSON.parse(deletion![1].body)).toEqual({
+    scope: 'project',
+    slug: 'race-work',
+    projectPath: '/project',
+  });
+  expect(
+    mocks.fetch.mock.calls.filter(
+      ([url, options]) =>
+        url.endsWith('/list') && JSON.parse(options.body).projectPath === '/project',
+    ),
+  ).toHaveLength(1);
+});
+
+it('reads skills and supporting documents by identity when list paths belong to another worktree', async () => {
+  list.builtin = [{ ...builtin, skillDir: '/old-gateway-worktree/skills/core' }];
+  mocks.fetch.mockImplementation(async (url: string) =>
+    response(
+      url.endsWith('/list')
+        ? list
+        : url.endsWith('/read')
+          ? { content: '# Instructions\n\n[Reference](references/guide.md)' }
+          : url.endsWith('/documents')
+            ? { files: ['references/guide.md'] }
+            : { content: '# Supporting guide' },
+    ),
+  );
+  render(<SkillsV2 selectedProject={project} projects={[project]} />);
+  await screen.findByRole('link', { name: 'Reference' });
+  fireEvent.click(screen.getByRole('link', { name: 'Reference' }));
+  await screen.findByRole('heading', { name: 'Supporting guide' });
+  for (const endpoint of ['/read', '/documents', '/read-document']) {
+    const request = mocks.fetch.mock.calls.find(([url]) => url.endsWith(endpoint));
+    expect(JSON.parse(request![1].body)).toMatchObject({
+      scope: 'builtin',
+      slug: 'core',
+      projectPath: '/project',
+    });
+    expect(JSON.parse(request![1].body).skillPath).toBeUndefined();
+  }
 });

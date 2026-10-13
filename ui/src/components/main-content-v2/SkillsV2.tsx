@@ -180,6 +180,23 @@ export default function SkillsV2({
   const generalCwd = localGeneralCwd || serverGeneralCwd;
   const effectiveProjectPath = generalCwd ? null : cwd;
   const previousProjectPath = useRef(effectiveProjectPath);
+  const projectContext = useMemo(
+    () => ({ projectPath: effectiveProjectPath }),
+    [effectiveProjectPath],
+  );
+  const currentProjectContext = useRef(projectContext);
+  currentProjectContext.current = projectContext;
+  const mounted = useRef(false);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
+  const isCurrentContext = useCallback(
+    () => mounted.current && currentProjectContext.current === projectContext,
+    [projectContext],
+  );
 
   const flashToast = useCallback((toastValue: ToastState, ms = 2400) => {
     setToast(toastValue);
@@ -189,13 +206,14 @@ export default function SkillsV2({
   }, []);
 
   const refresh = useCallback(async () => {
+    if (!isCurrentContext()) return;
     const requestId = ++listRequest.current;
     setLoading(true);
     try {
       const data = await api<SkillsListResponse>('/api/skills/list', {
         projectPath: effectiveProjectPath,
       });
-      if (requestId !== listRequest.current) return;
+      if (!isCurrentContext() || requestId !== listRequest.current) return;
       setSkills(data);
       setServerGeneralCwdPath((prev) => {
         if (!cwd) return null;
@@ -204,12 +222,12 @@ export default function SkillsV2({
         return prev === cwd ? null : prev;
       });
     } catch (e) {
-      if (requestId === listRequest.current)
+      if (isCurrentContext() && requestId === listRequest.current)
         flashToast({ kind: 'error', text: (e as Error).message });
     } finally {
-      if (requestId === listRequest.current) setLoading(false);
+      if (isCurrentContext() && requestId === listRequest.current) setLoading(false);
     }
-  }, [cwd, effectiveProjectPath, flashToast, localGeneralCwd]);
+  }, [cwd, effectiveProjectPath, flashToast, localGeneralCwd, isCurrentContext]);
 
   const invalidateListRequests = useCallback(() => {
     listRequest.current++;
@@ -222,6 +240,10 @@ export default function SkillsV2({
       setSkills(null);
       setActiveSlug(null);
       setActiveScope(null);
+      setSaving(false);
+      setShowNew(false);
+      setShowOverride(false);
+      setCreatingOverride(false);
     }
     void refresh();
     return invalidateListRequests;
@@ -263,12 +285,14 @@ export default function SkillsV2({
   }, [skills, activeSlug, activeScope]);
 
   const activeSkillPath = activeSkill?.skillDir;
+  const activeSkillScope = activeSkill?.scope;
+  const activeSkillSlug = activeSkill?.slug;
   // Metadata refreshes must not discard an open draft.
   useEffect(() => {
     setEditing(false);
     setReadReady(false);
     setDetailError(null);
-    if (!activeSkillPath) {
+    if (!activeSkillPath || !activeSkillScope || !activeSkillSlug) {
       setEditorContent('');
       setOriginalContent('');
       setEditorLoading(false);
@@ -277,7 +301,8 @@ export default function SkillsV2({
     let cancelled = false;
     setEditorLoading(true);
     api<{ content: string }>('/api/skills/read', {
-      skillPath: activeSkillPath,
+      scope: activeSkillScope,
+      slug: activeSkillSlug,
       projectPath: effectiveProjectPath,
     })
       .then((data) => {
@@ -304,7 +329,15 @@ export default function SkillsV2({
     return () => {
       cancelled = true;
     };
-  }, [activeSkillPath, effectiveProjectPath, flashToast, draftConflictMessage, readRetry]);
+  }, [
+    activeSkillPath,
+    activeSkillScope,
+    activeSkillSlug,
+    effectiveProjectPath,
+    flashToast,
+    draftConflictMessage,
+    readRetry,
+  ]);
 
   const isDirty = editorContent !== originalContent;
 
@@ -319,17 +352,19 @@ export default function SkillsV2({
   }, [isDirty]);
 
   const handleSave = useCallback(async () => {
-    if (!activeSkill) return;
+    if (!activeSkill || !isCurrentContext()) return;
     setSaving(true);
     setDetailError(null);
     try {
       const result = await api<{ ok: boolean; skill: Skill }>('/api/skills/write', {
-        skillPath: activeSkill.skillDir,
+        scope: activeSkill.scope,
+        slug: activeSkill.slug,
         projectPath: effectiveProjectPath,
         content: editorContent,
       });
-      setOriginalContent(editorContent);
       skillDrafts.delete(activeSkill.skillDir);
+      if (!isCurrentContext()) return;
+      setOriginalContent(editorContent);
       // Patch the skill in-place so list metadata (name/desc) refreshes.
       setSkills((prev) => {
         if (!prev) return prev;
@@ -348,15 +383,16 @@ export default function SkillsV2({
       flashToast({ kind: 'success', text: t('skillsTab.savedSuccess', { defaultValue: 'Saved' }) });
       setEditing(false);
     } catch (e) {
+      if (!isCurrentContext()) return;
       setDetailError((e as Error).message);
       flashToast({ kind: 'error', text: (e as Error).message });
     } finally {
-      setSaving(false);
+      if (isCurrentContext()) setSaving(false);
     }
-  }, [activeSkill, editorContent, effectiveProjectPath, flashToast, t]);
+  }, [activeSkill, editorContent, effectiveProjectPath, flashToast, t, isCurrentContext]);
 
   const handleDelete = useCallback(async () => {
-    if (!activeSkill || activeSkill.readonly) return;
+    if (!activeSkill || activeSkill.readonly || !isCurrentContext()) return;
     if (
       !(await confirm({
         message: t('skillsTab.confirmDelete', {
@@ -369,39 +405,50 @@ export default function SkillsV2({
     ) {
       return;
     }
+    if (!isCurrentContext()) return;
     try {
       await api('/api/skills/delete', {
-        skillPath: activeSkill.skillDir,
+        scope: activeSkill.scope,
+        slug: activeSkill.slug,
         projectPath: effectiveProjectPath,
       });
+      skillDrafts.delete(activeSkill.skillDir);
+      if (!isCurrentContext()) return;
       setActiveSlug(null);
       setActiveScope(null);
-      skillDrafts.delete(activeSkill.skillDir);
       await refresh();
+      if (!isCurrentContext()) return;
       flashToast({
         kind: 'success',
         text: t('skillsTab.deletedSuccess', { defaultValue: 'Deleted' }),
       });
     } catch (e) {
+      if (!isCurrentContext()) return;
       flashToast({ kind: 'error', text: (e as Error).message });
     }
-  }, [activeSkill, effectiveProjectPath, refresh, flashToast, t, confirm]);
+  }, [activeSkill, effectiveProjectPath, refresh, flashToast, t, confirm, isCurrentContext]);
 
   const handleCreateOverride = useCallback(async () => {
-    if (!activeSkill || activeSkill.scope !== 'builtin') return;
+    if (!activeSkill || activeSkill.scope !== 'builtin' || !isCurrentContext()) return;
     setCreatingOverride(true);
     setDetailError(null);
     const scope = effectiveProjectPath ? overrideScope : 'user';
     try {
       const result = await api<{ skill: Skill }>('/api/skills/import', {
-        sourcePath: activeSkill.skillDir,
+        sourceSkill: {
+          scope: activeSkill.scope,
+          slug: activeSkill.slug,
+          projectPath: effectiveProjectPath,
+        },
         slug: activeSkill.slug,
         scope,
         projectPath: scope === 'project' ? effectiveProjectPath : null,
         mode: 'copy',
         force: false,
       });
+      if (!isCurrentContext()) return;
       await refresh();
+      if (!isCurrentContext()) return;
       setActiveSlug(activeSkill.slug);
       setActiveScope(scope);
       setShowOverride(false);
@@ -412,15 +459,16 @@ export default function SkillsV2({
         }) as string,
       });
     } catch (e) {
+      if (!isCurrentContext()) return;
       setDetailError((e as Error).message);
     } finally {
-      setCreatingOverride(false);
+      if (isCurrentContext()) setCreatingOverride(false);
     }
-  }, [activeSkill, effectiveProjectPath, overrideScope, flashToast, refresh, t]);
+  }, [activeSkill, effectiveProjectPath, overrideScope, flashToast, refresh, t, isCurrentContext]);
 
   const handleSelect = useCallback(
     async (skill: Skill) => {
-      if (saving) return;
+      if (saving || !isCurrentContext()) return;
       if (skill.slug === activeSlug && skill.scope === activeScope) return;
       if (isDirty) {
         if (
@@ -434,15 +482,17 @@ export default function SkillsV2({
         ) {
           return;
         }
+        if (!isCurrentContext()) return;
         if (activeSkillPath) skillDrafts.delete(activeSkillPath);
       }
       setActiveSlug(skill.slug);
       setActiveScope(skill.scope);
     },
-    [activeSlug, activeScope, activeSkillPath, isDirty, saving, t, confirm],
+    [activeSlug, activeScope, activeSkillPath, isDirty, saving, t, confirm, isCurrentContext],
   );
 
   const discardDraft = async () => {
+    if (!isCurrentContext()) return false;
     if (
       saving ||
       (isDirty &&
@@ -453,6 +503,7 @@ export default function SkillsV2({
         })))
     )
       return false;
+    if (!isCurrentContext()) return false;
     if (activeSkillPath) skillDrafts.delete(activeSkillPath);
     setEditorContent(originalContent);
     setEditing(false);
@@ -507,8 +558,9 @@ export default function SkillsV2({
             setActiveScope={setActiveScope}
             compact={compactLayout}
             beforeMutation={async (skill) =>
-              skill.skillDir !== activeSkillPath || (await discardDraft())
+              isCurrentContext() && (skill.skillDir !== activeSkillPath || (await discardDraft()))
             }
+            isCurrentContext={isCurrentContext}
             t={t}
           />
         ) : null}
@@ -616,7 +668,9 @@ export default function SkillsV2({
           onClose={() => setShowNew(false)}
           onBatchChanged={refresh}
           onCreated={async (created) => {
+            if (!isCurrentContext()) return;
             await refresh();
+            if (!isCurrentContext()) return;
             if (created.slug) {
               setActiveSlug(created.slug);
               setActiveScope(created.scope);
@@ -825,6 +879,7 @@ function SkillsList({
   setActiveScope,
   compact,
   beforeMutation,
+  isCurrentContext,
   t,
 }: {
   skills: SkillsListResponse | null;
@@ -842,6 +897,7 @@ function SkillsList({
   setActiveScope: (scope: SkillScope | null) => void;
   compact: boolean;
   beforeMutation: (skill: Skill) => Promise<boolean>;
+  isCurrentContext: () => boolean;
   t: ReturnType<typeof useTranslation>['t'];
 }) {
   const confirm = useConfirm();
@@ -893,14 +949,17 @@ function SkillsList({
       if (!(await beforeMutation(skill))) return;
       try {
         await api('/api/skills/delete', {
-          skillPath: skill.skillDir,
+          scope: skill.scope,
+          slug: skill.slug,
           projectPath: effectiveProjectPath,
         });
+        if (!isCurrentContext()) return;
         if (selectedSkill?.slug === skill.slug && selectedSkill?.scope === skill.scope) {
           setActiveSlug(null);
           setActiveScope(null);
         }
         await refresh();
+        if (!isCurrentContext()) return;
         flashToast({
           kind: 'success',
           text: t('skillsTab.uninstallSuccess', {
@@ -909,6 +968,7 @@ function SkillsList({
           }) as string,
         });
       } catch (e) {
+        if (!isCurrentContext()) return;
         flashToast({ kind: 'error', text: (e as Error).message });
       }
     },
@@ -922,6 +982,7 @@ function SkillsList({
       t,
       confirm,
       beforeMutation,
+      isCurrentContext,
     ],
   );
 
@@ -931,7 +992,7 @@ function SkillsList({
       if (!(await beforeMutation(skill))) return;
       try {
         await api('/api/skills/import', {
-          sourcePath: skill.skillDir,
+          sourceSkill: { scope: skill.scope, slug: skill.slug, projectPath: effectiveProjectPath },
           slug: skill.slug,
           scope: target.scope,
           projectPath: target.projectPath,
@@ -939,9 +1000,11 @@ function SkillsList({
           force: false,
         });
         await api('/api/skills/delete', {
-          skillPath: skill.skillDir,
+          scope: skill.scope,
+          slug: skill.slug,
           projectPath: effectiveProjectPath,
         });
+        if (!isCurrentContext()) return;
         if (selectedSkill?.slug === skill.slug && selectedSkill?.scope === skill.scope) {
           if (target.scope === 'project' && target.projectPath !== effectiveProjectPath) {
             setActiveSlug(null);
@@ -949,6 +1012,7 @@ function SkillsList({
           } else setActiveScope(target.scope);
         }
         await refresh();
+        if (!isCurrentContext()) return;
         const label =
           target.scope === 'user'
             ? t('uiText.userScope')
@@ -962,6 +1026,7 @@ function SkillsList({
           }) as string,
         });
       } catch (e) {
+        if (!isCurrentContext()) return;
         flashToast({ kind: 'error', text: (e as Error).message });
       }
     },
@@ -974,6 +1039,7 @@ function SkillsList({
       setActiveSlug,
       t,
       beforeMutation,
+      isCurrentContext,
     ],
   );
 
@@ -1488,9 +1554,10 @@ function SkillDetail({
             ) : null}
             {view === 'read' || view === 'split' ? (
               <SkillReader
-                key={skill.skillDir}
+                key={`${skill.scope}:${skill.slug}:${skill.scope === 'project' ? projectPath : ''}`}
                 content={document.body}
-                skillPath={skill.skillDir}
+                scope={skill.scope}
+                slug={skill.slug}
                 projectPath={projectPath}
               />
             ) : null}

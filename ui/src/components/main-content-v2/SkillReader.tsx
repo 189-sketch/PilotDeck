@@ -16,11 +16,13 @@ async function request<T>(endpoint: string, body: unknown): Promise<T> {
 
 export default function SkillReader({
   content,
-  skillPath,
+  scope,
+  slug,
   projectPath,
 }: {
   content: string;
-  skillPath: string;
+  scope: 'builtin' | 'user' | 'project';
+  slug: string;
   projectPath: string | null;
 }) {
   const { t } = useTranslation();
@@ -50,7 +52,7 @@ export default function SkillReader({
   useEffect(() => {
     let cancelled = false;
     setListError(false);
-    request<{ files: string[] }>('documents', { skillPath, projectPath })
+    request<{ files: string[] }>('documents', { scope, slug, projectPath })
       .then((data) => {
         if (!cancelled) setFiles((data.files ?? []).filter((item) => item !== 'SKILL.md'));
       })
@@ -60,7 +62,7 @@ export default function SkillReader({
     return () => {
       cancelled = true;
     };
-  }, [skillPath, projectPath, retry]);
+  }, [scope, slug, projectPath, retry]);
   useEffect(() => {
     setError(null);
     if (file === 'SKILL.md') {
@@ -70,7 +72,7 @@ export default function SkillReader({
     let cancelled = false;
     setLoading(true);
     setReference('');
-    request<{ content: string }>('read-document', { skillPath, projectPath, file })
+    request<{ content: string }>('read-document', { scope, slug, projectPath, file })
       .then((data) => {
         if (!cancelled) setReference(data.content);
       })
@@ -83,7 +85,7 @@ export default function SkillReader({
     return () => {
       cancelled = true;
     };
-  }, [file, skillPath, projectPath, retry]);
+  }, [file, scope, slug, projectPath, retry]);
   useEffect(() => {
     setOutline(
       Array.from(article.current?.querySelectorAll<HTMLElement>('h1,h2,h3,h4,h5,h6') ?? []).map(
