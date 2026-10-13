@@ -1,5 +1,6 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
+import { findCatalogProviderById } from '../../shared/catalogProviders';
 import ToolsSection from './view/agentSearch/components/ToolsSection';
 import McpServersSection from './view/extensions';
 import ServiceSection from './view/advanced/components/ServiceSection';
@@ -7,7 +8,6 @@ import ProviderCard from './view/modelPool/components/ProviderCard';
 import SettingsSidebar from './view/SettingsSidebar';
 import CronSection from './view/agentSchedule/components/CronSection';
 import AlwaysOnSection from './view/agentResident/components/AlwaysOnSection';
-import { findCatalogProviderById } from '../../shared/catalogProviders';
 const mocks = vi.hoisted(() => ({ fetch: vi.fn() }));
 vi.mock('../../utils/api', () => ({ authenticatedFetch: mocks.fetch }));
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
@@ -26,7 +26,7 @@ it('preserves configured custom search authentication when editing endpoint', ()
   fireEvent.click(screen.getAllByRole('button', { name: 'settingsPage.actions.edit' })[0]);
   fireEvent.change(screen.getByLabelText('pilotDeckConfig.panels.tools.endpoint.label'), { target: { value: 'https://search.example/new' } });
   fireEvent.click(screen.getByRole('button', { name: 'settingsPage.actions.save' }));
-  expect(onChange.mock.calls[0][0].tools.webSearch.customProvider.auth).toBe('queryApiKey');
+  expect(onChange.mock.calls[0][0].tools.webSearch.providers.custom.customProvider.auth).toBe('queryApiKey');
 });
 it('does not persist a cancelled new MCP server when saving an existing server', async () => {
   const raw = JSON.stringify({ mcpServers: { existing: { command: 'node', args: ['server.js'] } } });
@@ -104,7 +104,7 @@ it.each(['bearer', 'queryApiKey', 'bodyApiKey', 'none'] as const)('preserves %s 
   fireEvent.click(screen.getAllByRole('button', { name: 'settingsPage.actions.edit' })[1]);
   fireEvent.change(screen.getByLabelText('pilotDeckConfig.panels.tools.apiKey.label'), { target: { value: 'new-key' } });
   fireEvent.click(screen.getByRole('button', { name: 'settingsPage.actions.save' }));
-  expect(onChange.mock.calls[0][0].tools.webSearch.customProvider).toEqual({ auth, method: 'GET' });
+  expect(onChange.mock.calls[0][0].tools.webSearch.providers.custom.customProvider).toEqual({ auth, method: 'GET' });
 });
 
 it('keeps the official DeepSeek model-list URL when using the official endpoint', async () => {

@@ -1,4 +1,5 @@
 import { WEB_SEARCH_ENDPOINTS, isWebSearchProvider, isSerpApiEngine } from "../../../src/pilot/config/webSearchProviders.js";
+import { getWebSearchProviderConfig, migrateWebSearchProviderConfigs, resolveWebSearchConfig } from "../../../src/pilot/config/webSearchConfig.js";
 import { additionalSearchRequest, additionalSearchResults, isAdditionalSearchProvider, redactSearchError } from "../../../src/tool/builtin/additionalWebSearch.js";
 import express from 'express';
 import { createConnectionTestTasks } from '../services/connectionTestTasks.js';
@@ -263,19 +264,64 @@ function webSearchCredentialScopeMatches(nextConfig, previousConfig) {
   return JSON.stringify(webSearchCredentialScope(nextConfig)) === JSON.stringify(webSearchCredentialScope(previousConfig));
 }
 
+function formatWebSearchApiError(response, raw) {
+  const error = isRecord(raw?.error) ? raw.error : {};
+  const message = [raw?.error, error.message, error.msg, raw?.message, raw?.msg]
+    .find(value => typeof value === 'string' && value.trim());
+  const code = [error.code, raw?.code]
+    .find(value => typeof value === 'number' || (typeof value === 'string' && value.trim()));
+  const context = [
+    ...(!response.ok ? [`HTTP ${response.status}`] : []),
+    ...(code !== undefined && String(code) !== '0' && (response.ok || String(code) !== String(response.status))
+      ? [`code=${code}`]
+      : []),
+  ].join(', ');
+  const detail = message?.trim() || (!response.ok && response.statusText) || 'Search provider error';
+  return context ? `${context}: ${detail}` : detail;
+}
+
 function validateMaskedWebSearchKeyReuse(nextConfig, previousConfig) {
   const nextWebSearch = nextConfig?.tools?.webSearch;
-  if (nextWebSearch?.apiKey !== MASKED_SECRET) return null;
-
   const previousWebSearch = previousConfig?.tools?.webSearch;
-  const previousKey = typeof previousWebSearch?.apiKey === 'string' ? previousWebSearch.apiKey.trim() : '';
-  if (!previousKey || previousKey === MASKED_SECRET) {
-    return 'Saved Web Search API key is unavailable. Enter the API key again.';
+
+  const entries = [];
+  if (nextWebSearch?.apiKey === MASKED_SECRET) {
+    entries.push([nextWebSearch, resolveWebSearchConfig(previousWebSearch ?? {})]);
   }
-  if (!webSearchCredentialScopeMatches(nextWebSearch, previousWebSearch)) {
-    return 'Enter the Web Search API key again after changing the provider, endpoint, or authentication settings.';
+  for (const [provider, settings] of Object.entries(nextWebSearch?.providers ?? {})) {
+    if (!isWebSearchProvider(provider) || settings?.apiKey !== MASKED_SECRET) continue;
+    entries.push([
+      { ...settings, provider },
+      { ...getWebSearchProviderConfig(previousWebSearch ?? {}, provider), provider },
+    ]);
+  }
+  for (const [next, previous] of entries) {
+    const previousKey = typeof previous.apiKey === 'string' ? previous.apiKey.trim() : '';
+    if (!previousKey || previousKey === MASKED_SECRET) {
+      return 'Saved Web Search API key is unavailable. Enter the API key again.';
+    }
+    if (!webSearchCredentialScopeMatches(next, previous)) {
+      return 'Enter the Web Search API key again after changing the provider, endpoint, or authentication settings.';
+    }
   }
   return null;
+}
+
+// The first form edit moves a legacy key into providers.<id>.apiKey. Supply the
+// same prior secret at both paths so masked edits can migrate without exposing it.
+function webSearchSecretSource(config) {
+  const webSearch = config?.tools?.webSearch;
+  if (!webSearch || typeof webSearch !== 'object' || Array.isArray(webSearch)) return config;
+  return {
+    ...config,
+    tools: {
+      ...config.tools,
+      webSearch: {
+        ...migrateWebSearchProviderConfigs(webSearch),
+        ...resolveWebSearchConfig(webSearch),
+      },
+    },
+  };
 }
 
 function isRecord(value) {
@@ -874,7 +920,7 @@ router.put('/', async (req, res) => {
       // for secrets the user didn't actually touch.
       const restored = diskRecord.parseError
         ? renamedConfig
-        : preserveMaskedSecrets(renamedConfig, diskRecord.rawYaml ?? {});
+        : preserveMaskedSecrets(renamedConfig, webSearchSecretSource(diskRecord.rawYaml ?? {}));
       if (hasUnresolvedMaskedSecrets(restored)) {
         return res.status(400).json({
           error: 'One or more masked secrets could not be restored. Enter those credentials again before saving.',
@@ -937,7 +983,7 @@ router.put('/', async (req, res) => {
       if (maskedKeyError) {
         return res.status(400).json({ error: maskedKeyError });
       }
-      const restored = preserveMaskedSecrets(renamedConfig, diskRecord.config);
+      const restored = preserveMaskedSecrets(renamedConfig, webSearchSecretSource(diskRecord.config));
       if (hasUnresolvedMaskedSecrets(restored)) {
         return res.status(400).json({
           error: 'One or more masked secrets could not be restored. Enter those credentials again before saving.',
@@ -1302,8 +1348,12 @@ router.post('/test-web-search', async (req, res) => {
   if (requestedKey === MASKED_SECRET) {
     try {
       const record = readPilotDeckConfigFile();
-      const savedWebSearch = record.config?.tools?.webSearch;
+      const savedWebSearch = {
+        ...getWebSearchProviderConfig(record.config?.tools?.webSearch ?? {}, selectedProvider),
+        provider: selectedProvider,
+      };
       const savedKey = savedWebSearch?.apiKey;
+      const activeKey = resolveWebSearchConfig(record.config?.tools?.webSearch ?? {}).apiKey;
       const requestedWebSearch = {
         provider: selectedProvider,
         endpoint: trimmedEndpoint,
@@ -1315,7 +1365,10 @@ router.post('/test-web-search', async (req, res) => {
         webSearchCredentialScopeMatches(requestedWebSearch, savedWebSearch)
       ) {
         trimmedKey = savedKey.trim();
-      } else if (typeof savedKey === 'string' && savedKey.trim() !== MASKED_SECRET) {
+      } else if (
+        (typeof savedKey === 'string' && savedKey.trim() !== MASKED_SECRET)
+        || (typeof activeKey === 'string' && activeKey.trim() && activeKey.trim() !== MASKED_SECRET)
+      ) {
         return res.status(400).json({
           ok: false,
           error: 'Enter the Web Search API key again after changing the provider, endpoint, or authentication settings.',
@@ -1449,21 +1502,17 @@ router.post('/test-web-search', async (req, res) => {
       raw = await response.json();
     } catch { /* not JSON */ }
 
+    const hasApiError = (typeof raw?.error === 'string' && raw.error.trim())
+      || (isRecord(raw?.error) && Object.keys(raw.error).length > 0);
+    if (!response.ok || hasApiError) {
+      return res.json({ ok: false, error: redactSearchError(formatWebSearchApiError(response, raw), trimmedKey), latencyMs });
+    }
     if (isAdditionalSearchProvider(selectedProvider)) {
-      if (!response.ok) throw new Error(`API error (${response.status}): ${JSON.stringify(raw)}`);
       const organic = additionalSearchResults(selectedProvider, raw, 3);
       return res.json({ ok: true, latencyMs, organicCount: organic.length });
     }
-    if (!response.ok) {
-      const detail = (raw && (raw.error || raw.msg)) || `${response.status} ${response.statusText}`;
-      return res.json({ ok: false, error: String(detail), latencyMs });
-    }
-    if (raw && typeof raw.error === 'string' && raw.error.length > 0) {
-      return res.json({ ok: false, error: raw.error, latencyMs });
-    }
     if (raw && typeof raw.code === 'number' && raw.code !== 0) {
-      const msg = typeof raw.msg === 'string' ? raw.msg : 'proxy error';
-      return res.json({ ok: false, error: `code=${raw.code}: ${msg}`, latencyMs });
+      return res.json({ ok: false, error: redactSearchError(formatWebSearchApiError(response, raw), trimmedKey), latencyMs });
     }
 
     const organic = selectedProvider === 'tavily'
@@ -1482,7 +1531,7 @@ router.post('/test-web-search', async (req, res) => {
     if (isNetworkTimeout(err)) {
       return res.json({ ok: false, error: `Connection timed out after ${timeout / 1000}s.` });
     }
-    return res.json({ ok: false, error: isAdditionalSearchProvider(selectedProvider) ? redactSearchError(err, trimmedKey) : err.message || String(err) });
+    return res.json({ ok: false, error: redactSearchError(err, trimmedKey) });
   }
 });
 
