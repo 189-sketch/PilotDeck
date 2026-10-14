@@ -21,7 +21,7 @@ vi.mock('./database/db.js', () => ({
     applyCustomSessionNames: vi.fn(),
 }));
 
-import { addProjectManually, deleteSession, getProjects, getProjectsSnapshot } from './projects.js';
+import { addProjectManually, deleteSession, extractProjectDirectory, getProjects, getProjectsSnapshot } from './projects.js';
 import { createProjectId, sanitizeSessionIdForPath } from './utils/pilotPaths.js';
 
 const originalPilotHome = process.env.PILOT_HOME;
@@ -215,6 +215,18 @@ describe('project registration and snapshot ordering', () => {
         expect(gateway.listSessions).not.toHaveBeenCalled();
     });
 
+    it('never authorizes a stale or gateway-only presentation cache', async () => {
+        const workspace = path.join(pilotHome, 'workspace');
+        await fs.mkdir(workspace);
+        const registered = await addProjectManually(workspace);
+        expect(await extractProjectDirectory(registered.name)).toBe(workspace);
+        await fs.rm(path.join(pilotHome, 'projects', registered.name), { recursive: true });
+        gateway.listProjects.mockResolvedValue({ projects: [{ projectKey: workspace, fullPath: workspace }] });
+        await getProjects();
+        await expect(extractProjectDirectory(registered.name)).rejects.toMatchObject({ code: 'PROJECT_NOT_FOUND' });
+        await expect(extractProjectDirectory(workspace)).rejects.toMatchObject({ code: 'PROJECT_NOT_FOUND' });
+    });
+
     it('orders a slow scan before a registration even when it finishes afterwards', async () => {
         const pending = deferred();
         gateway.listProjects.mockReturnValueOnce(pending.promise);
@@ -244,6 +256,7 @@ describe('deleteSession lifecycle', () => {
         pilotHome = await fs.mkdtemp(path.join(os.tmpdir(), 'pilotdeck-delete-lifecycle-'));
         process.env.PILOT_HOME = pilotHome;
         project = path.join(pilotHome, 'workspace');
+        await fs.mkdir(project);
         const projectDirectory = path.join(pilotHome, 'projects', createProjectId(project));
         await fs.mkdir(path.join(projectDirectory, 'chats'), {recursive: true});
         await fs.writeFile(path.join(projectDirectory, '.cwd'), project);
