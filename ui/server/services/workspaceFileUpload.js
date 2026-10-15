@@ -57,7 +57,7 @@ async function destinationExists(root, relative) {
 export function createWorkspaceUploadCheckHandler({ resolveProject, getLimits = readUploadLimits }) {
   return async (req, res) => {
     try {
-      const root = await fs.realpath(await resolveProject(req.params.projectName));
+      const root = await fs.realpath(req.projectRoot ?? await resolveProject(req.params.projectName));
       const target = relativePath(req.body?.targetPath || '', true);
       const input = req.body?.relativePaths;
       if (!Array.isArray(input) || input.length < 1 || input.length > getLimits().maxFiles) {
@@ -111,7 +111,7 @@ export function createWorkspaceFileUploadHandler({ resolveProject, getLimits = r
     req.once('aborted', abort);
     res.once('close', onClose);
     try {
-      root = await fs.realpath(await resolveProject(req.params.projectName));
+      root = await fs.realpath(req.projectRoot ?? await resolveProject(req.params.projectName));
       const limits = getLimits();
       if ((active.get(root) || 0) >= limits.maxConcurrentPerProject) {
         throw uploadError('UPLOAD_CONCURRENCY_LIMIT', 'Too many uploads in this workspace. Please retry shortly.', 429);

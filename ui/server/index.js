@@ -152,33 +152,13 @@ import { getConnectableHost } from '../shared/networkHosts.js';
 import { contentDispositionAttachment } from './utils/downloadHeaders.js';
 import { createSessionWatchRegistry } from './session-watch-registry.js';
 import { isPathInsideOrEqual } from './utils/pathSafety.js';
-import { isVirtualProjectPath, resolvePilotHome } from './utils/pilotPaths.js';
+import { createProjectFilesystemMiddleware } from './middleware/projectFilesystem.js';
 
 // PilotDeck-only mode: chat execution always goes through src/gateway via
 // cursor-cli, openai-codex, gemini-cli) has been removed.
 const VALID_PROVIDERS = ['pilotdeck'];
 
-async function requireRealProjectFilesystem(req, res, next) {
-    try {
-        const projectRoot = await extractProjectDirectory(req.params.projectName);
-        if (isVirtualProjectPath(projectRoot, resolvePilotHome(process.env), process.env)) {
-            return res.status(403).json({
-                error: {
-                    code: 'PROJECT_PATH_FORBIDDEN',
-                    message: 'Project file operations are unavailable for General conversations.',
-                },
-            });
-        }
-        return next();
-    } catch (error) {
-        return res.status(404).json({
-            error: {
-                code: 'PROJECT_NOT_FOUND',
-                message: error instanceof Error ? error.message : 'Project not found',
-            },
-        });
-    }
-}
+const requireRealProjectFilesystem = createProjectFilesystemMiddleware();
 
 // File-system watchers for the chat transcript root maintained by
 // PilotDeck. Provider-specific watchers (.pilotdeck) were dropped along with the four provider adapters.
@@ -1507,7 +1487,7 @@ app.get('/api/projects/:projectName/file', authenticateToken, requireRealProject
             return res.status(400).json({ error: 'Invalid file path' });
         }
 
-        const projectRoot = await extractProjectDirectory(projectName).catch(() => null);
+        const projectRoot = req.projectRoot;
         if (!projectRoot) {
             return res.status(404).json({ error: 'Project not found' });
         }
@@ -1545,7 +1525,7 @@ app.get('/api/projects/:projectName/files/content', authenticateToken, requireRe
             return res.status(400).json({ error: 'Invalid file path' });
         }
 
-        const projectRoot = await extractProjectDirectory(projectName).catch(() => null);
+        const projectRoot = req.projectRoot;
         if (!projectRoot) {
             return res.status(404).json({ error: 'Project not found' });
         }
@@ -1620,7 +1600,7 @@ app.get('/api/projects/:projectName/files/preview/pdf', authenticateToken, requi
             return res.status(400).json({ error: 'Invalid file path' });
         }
 
-        const projectRoot = await extractProjectDirectory(projectName).catch(() => null);
+        const projectRoot = req.projectRoot;
         if (!projectRoot) {
             return res.status(404).json({ error: 'Project not found' });
         }
@@ -1683,7 +1663,7 @@ app.get('/api/projects/:projectName/files/preview/spreadsheet/manifest', authent
             return res.status(400).json({ error: 'Invalid file path' });
         }
 
-        const projectRoot = await extractProjectDirectory(projectName).catch(() => null);
+        const projectRoot = req.projectRoot;
         if (!projectRoot) {
             return res.status(404).json({ error: 'Project not found' });
         }
@@ -1726,7 +1706,7 @@ app.get('/api/projects/:projectName/files/preview/spreadsheet/data', authenticat
             return res.status(400).json({ error: 'Invalid file path' });
         }
 
-        const projectRoot = await extractProjectDirectory(projectName).catch(() => null);
+        const projectRoot = req.projectRoot;
         if (!projectRoot) {
             return res.status(404).json({ error: 'Project not found' });
         }
@@ -1775,7 +1755,7 @@ app.get('/api/projects/:projectName/files/preview/spreadsheet/sheet', authentica
             return res.status(400).json({ error: 'File path and worksheet index are required' });
         }
 
-        const projectRoot = await extractProjectDirectory(projectName).catch(() => null);
+        const projectRoot = req.projectRoot;
         if (!projectRoot) {
             return res.status(404).json({ error: 'Project not found' });
         }
@@ -1823,7 +1803,7 @@ app.get('/api/projects/:projectName/preview/*', authenticateToken, requireRealPr
         const { projectName } = req.params;
         const relativeFilePath = req.params[0] || 'index.html';
 
-        const projectRoot = await extractProjectDirectory(projectName).catch(() => null);
+        const projectRoot = req.projectRoot;
         if (!projectRoot) {
             return res.status(404).json({ error: 'Project not found' });
         }
@@ -1857,7 +1837,7 @@ app.get('/api/projects/:projectName/preview/*', authenticateToken, requireRealPr
 app.get('/api/projects/:projectName/download', authenticateToken, requireRealProjectFilesystem, async (req, res) => {
     try {
         const { projectName } = req.params;
-        const projectRoot = await extractProjectDirectory(projectName).catch(() => null);
+        const projectRoot = req.projectRoot;
         if (!projectRoot) {
             return res.status(404).json({ error: 'Project not found' });
         }
@@ -1912,7 +1892,7 @@ app.put('/api/projects/:projectName/file', authenticateToken, requireRealProject
             return res.status(400).json({ error: 'Content is required' });
         }
 
-        const projectRoot = await extractProjectDirectory(projectName).catch(() => null);
+        const projectRoot = req.projectRoot;
         if (!projectRoot) {
             return res.status(404).json({ error: 'Project not found' });
         }
@@ -1950,15 +1930,7 @@ app.get('/api/projects/:projectName/files', authenticateToken, requireRealProjec
 
         // Using fsPromises from import
 
-        // Use extractProjectDirectory to get the actual project path
-        let actualPath;
-        try {
-            actualPath = await extractProjectDirectory(req.params.projectName);
-        } catch (error) {
-            console.error('Error extracting project directory:', error);
-            // Fallback to simple dash replacement
-            actualPath = req.params.projectName.replace(/-/g, '/');
-        }
+        const actualPath = req.projectRoot;
 
         // Check if path exists
         try {
@@ -2042,7 +2014,7 @@ app.post('/api/projects/:projectName/files/create', authenticateToken, requireRe
         }
 
         // Get project root
-        const projectRoot = await extractProjectDirectory(projectName).catch(() => null);
+        const projectRoot = req.projectRoot;
         if (!projectRoot) {
             return res.status(404).json({ error: 'Project not found' });
         }
@@ -2115,7 +2087,7 @@ app.put('/api/projects/:projectName/files/rename', authenticateToken, requireRea
         }
 
         // Get project root
-        const projectRoot = await extractProjectDirectory(projectName).catch(() => null);
+        const projectRoot = req.projectRoot;
         if (!projectRoot) {
             return res.status(404).json({ error: 'Project not found' });
         }
@@ -2187,7 +2159,7 @@ app.delete('/api/projects/:projectName/files', authenticateToken, requireRealPro
         }
 
         // Get project root
-        const projectRoot = await extractProjectDirectory(projectName).catch(() => null);
+        const projectRoot = req.projectRoot;
         if (!projectRoot) {
             return res.status(404).json({ error: 'Project not found' });
         }
