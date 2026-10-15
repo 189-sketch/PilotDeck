@@ -70,7 +70,7 @@ describe('workspace uploads', () => {
     expect((await f.check(['slides.pptx'])).status).toBe(200);
     expect((await f.check(['slides.pptx'], 'other')).status).toBe(200);
     expect(await fs.readdir(f.root)).toEqual(['docs']);
-    expect((await f.check(['../escape.txt'])).status).toBe(403);
+    expect((await f.check(['../escape.txt'])).status).toBe(400);
   });
 
   it('rejects existing files even when the client bypasses preflight', async () => {
@@ -84,16 +84,14 @@ describe('workspace uploads', () => {
     await f.cleanStaging();
   });
 
-  it('preserves directory conflicts and forbids dangling symlink destinations', async () => {
+  it('treats directories and dangling symlinks as name conflicts', async () => {
     const f = await fixture();
     await fs.mkdir(path.join(f.root, 'folder'));
     await fs.symlink(path.join(f.root, 'missing'), path.join(f.root, 'link'));
-    const checked = await f.check(['folder']);
-    expect(checked.body.conflicts).toEqual(['folder']);
-    expect((await f.check(['link'])).body.error.code).toBe('PROJECT_PATH_FORBIDDEN');
+    const checked = await f.check(['folder', 'link']);
+    expect(checked.body.conflicts).toEqual(['folder', 'link']);
     const result = await f.send([file('folder'), file('link')]);
-    expect(result.status).toBe(403);
-    expect(result.body.error.code).toBe('PROJECT_PATH_FORBIDDEN');
+    expect(result.body.errors.map(error => error.code)).toEqual(['UPLOAD_FILE_EXISTS', 'UPLOAD_FILE_EXISTS']);
     expect((await fs.lstat(path.join(f.root, 'folder'))).isDirectory()).toBe(true);
     expect((await fs.lstat(path.join(f.root, 'link'))).isSymbolicLink()).toBe(true);
     await f.cleanStaging();
@@ -148,7 +146,7 @@ describe('workspace uploads', () => {
     await fs.symlink(outside, path.join(f.root, 'link'));
     for (const name of ['../escape.txt', 'link/escape.txt']) {
       const result = await f.send([file('good.txt'), file(name)]);
-      expect(result.body.error.code).toBe('PROJECT_PATH_FORBIDDEN');
+      expect(result.body.error.code).toBe('UPLOAD_INVALID_PATH');
       await expect(fs.access(path.join(f.root, 'good.txt'))).rejects.toThrow();
     }
     expect(await fs.readdir(outside)).toEqual([]);

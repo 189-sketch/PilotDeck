@@ -40,7 +40,6 @@ import { mapCronRunOutcome } from '../../src/cron/protocol/types.js';
 import sessionManager from './sessionManager.js';
 import { applyCustomSessionNames } from './database/db.js';
 import { ensureGeneralWorkspaceDirectory } from './utils/generalWorkspace.js';
-import { resolveRegisteredProject } from './services/projectRegistration.js';
 
 // Optional taskmaster detection. Read once per project; lightweight.
 async function detectTaskMaster(projectPath) {
@@ -424,10 +423,36 @@ async function getSessions(projectName, limit = 5, offset = 0) {
 }
 
 /**
- * Resolve only registered projects. Presentation caches never authorize access.
+ * Resolve a `projectName` (encoded form like `-Users-miwi-PilotDeck`,
+ * a basename, or an already-absolute path) to the absolute project root.
+ * Falls back to consulting the directory cache populated by
+ * `getProjects()` so worktree-aware paths resolve correctly.
  */
 async function extractProjectDirectory(projectName) {
-    return resolveRegisteredProject(projectName, resolvePilotHome(process.env));
+    if (!projectName) {
+        return resolvePilotHome(process.env);
+    }
+    if (path.isAbsolute(projectName)) {
+        rememberProjectDirectory(projectName, projectName);
+        return projectName;
+    }
+    const cached = directoryCache.get(projectName);
+    if (cached) {
+        return cached;
+    }
+    const markedProjects = await readMarkedProjectPaths();
+    const marked = markedProjects.get(projectName);
+    if (marked) {
+        rememberProjectDirectory(projectName, marked);
+        return marked;
+    }
+    if (projectName.startsWith('-')) {
+        // Legacy dash-encoding heuristic: `-Users-foo-foo` → `/Users/foo/foo`.
+        const decoded = '/' + projectName.replace(/^-+/, '').replace(/-/g, '/');
+        rememberProjectDirectory(projectName, decoded);
+        return decoded;
+    }
+    return resolvePilotHome(process.env);
 }
 
 async function addProjectManually(projectPath, _displayName = null) {

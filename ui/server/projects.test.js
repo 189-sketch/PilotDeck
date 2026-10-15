@@ -5,7 +5,6 @@ import path from 'node:path';
 
 const gateway = vi.hoisted(() => ({
     closeSession: vi.fn(),
-    closeProjectSessions: vi.fn(),
     describeProject: vi.fn(),
     listProjects: vi.fn(),
     listSessions: vi.fn(),
@@ -14,7 +13,6 @@ const gateway = vi.hoisted(() => ({
 vi.mock('./pilotdeck-bridge.js', () => ({
     getPilotDeckGateway: vi.fn(async () => gateway),
     beginSessionDeletion: vi.fn(() => () => {}),
-    beginProjectDeletion: vi.fn(() => () => {}),
     isGatewayUnavailableError: (error) => /Gateway WebSocket/i.test(error?.message || ''),
     withPilotDeckGatewayReadRetry: vi.fn(async (operation) => operation(gateway)),
 }));
@@ -23,7 +21,7 @@ vi.mock('./database/db.js', () => ({
     applyCustomSessionNames: vi.fn(),
 }));
 
-import { addProjectManually, deleteProject, deleteSession, extractProjectDirectory, getProjects, getProjectsSnapshot, getSessions } from './projects.js';
+import { addProjectManually, deleteSession, getProjects, getProjectsSnapshot } from './projects.js';
 import { createProjectId, sanitizeSessionIdForPath } from './utils/pilotPaths.js';
 
 const originalPilotHome = process.env.PILOT_HOME;
@@ -217,18 +215,6 @@ describe('project registration and snapshot ordering', () => {
         expect(gateway.listSessions).not.toHaveBeenCalled();
     });
 
-    it('never authorizes a stale or gateway-only presentation cache', async () => {
-        const workspace = path.join(pilotHome, 'workspace');
-        await fs.mkdir(workspace);
-        const registered = await addProjectManually(workspace);
-        expect(await extractProjectDirectory(registered.name)).toBe(workspace);
-        await fs.rm(path.join(pilotHome, 'projects', registered.name), { recursive: true });
-        gateway.listProjects.mockResolvedValue({ projects: [{ projectKey: workspace, fullPath: workspace }] });
-        await getProjects();
-        await expect(extractProjectDirectory(registered.name)).rejects.toMatchObject({ code: 'PROJECT_NOT_FOUND' });
-        await expect(extractProjectDirectory(workspace)).rejects.toMatchObject({ code: 'PROJECT_NOT_FOUND' });
-    });
-
     it('orders a slow scan before a registration even when it finishes afterwards', async () => {
         const pending = deferred();
         gateway.listProjects.mockReturnValueOnce(pending.promise);
@@ -258,7 +244,6 @@ describe('deleteSession lifecycle', () => {
         pilotHome = await fs.mkdtemp(path.join(os.tmpdir(), 'pilotdeck-delete-lifecycle-'));
         process.env.PILOT_HOME = pilotHome;
         project = path.join(pilotHome, 'workspace');
-        await fs.mkdir(project);
         const projectDirectory = path.join(pilotHome, 'projects', createProjectId(project));
         await fs.mkdir(path.join(projectDirectory, 'chats'), {recursive: true});
         await fs.writeFile(path.join(projectDirectory, '.cwd'), project);
@@ -285,27 +270,5 @@ describe('deleteSession lifecycle', () => {
         gateway.closeSession.mockRejectedValue(new Error('Gateway unavailable'));
         await expect(deleteSession(project, sessionId)).rejects.toThrow('Gateway unavailable');
         expect(await fs.readFile(transcript, 'utf8')).toBe('original transcript');
-    });
-    it('paginates saved sessions after the workspace is removed', async () => {
-        await fs.rm(project, { recursive: true });
-        gateway.listSessions.mockResolvedValue({ sessions: [{ sessionId, lastModified: 400 }] });
-        gateway.describeProject.mockResolvedValue({ sessionCount: 6 });
-        const result = await getSessions(createProjectId(project), 5, 5);
-        expect(gateway.listSessions).toHaveBeenCalledWith({ projectKey: project, limit: 5, cursor: '5' });
-        expect(result.sessions[0].id).toBe(sessionId);
-        expect(result.total).toBe(6);
-    });
-    it('deletes a saved session after the workspace is removed', async () => {
-        await fs.rm(project, { recursive: true });
-        gateway.closeSession.mockResolvedValue(undefined);
-        expect(await deleteSession(createProjectId(project), sessionId)).toBe(true);
-        await expect(fs.access(transcript)).rejects.toMatchObject({ code: 'ENOENT' });
-    });
-    it('deletes project storage after the workspace is removed', async () => {
-        await fs.rm(project, { recursive: true });
-        gateway.closeProjectSessions.mockResolvedValue(undefined);
-        expect(await deleteProject(createProjectId(project), true)).toBe(true);
-        expect(gateway.closeProjectSessions).toHaveBeenCalledWith({ projectKey: project });
-        await expect(fs.access(path.dirname(path.dirname(transcript)))).rejects.toMatchObject({ code: 'ENOENT' });
     });
 });

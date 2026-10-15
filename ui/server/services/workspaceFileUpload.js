@@ -6,19 +6,18 @@ import * as fs from 'node:fs/promises';
 import { Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { readUploadLimits } from './uploadLimits.js';
-import { createProjectFileAccess, forbiddenPath, sendProjectFileError } from './projectFileAccess.js';
 
 function uploadError(code, message, status = 400) {
   return Object.assign(new Error(message), { code, status });
 }
 
 function relativePath(value, allowEmpty = false) {
-  if (typeof value !== 'string') throw forbiddenPath();
+  if (typeof value !== 'string') throw uploadError('UPLOAD_INVALID_PATH', 'Invalid destination path.');
   const normalized = value.replace(/\\/g, '/');
   if (allowEmpty && (!normalized || normalized === '.')) return '';
   if (!normalized || normalized.startsWith('/') || /^[a-z]:/i.test(normalized)
     || normalized.includes('\0') || normalized.split('/').some(part => !part || part === '.' || part === '..')) {
-    throw forbiddenPath();
+    throw uploadError('UPLOAD_INVALID_PATH', 'Destination must be a relative path inside the workspace.');
   }
   return normalized;
 }
@@ -31,7 +30,7 @@ async function ensureDirectory(root, relative) {
     await fs.mkdir(current).catch(error => { if (error.code !== 'EEXIST') throw error; });
     const info = await fs.lstat(current);
     if (info.isSymbolicLink() || !info.isDirectory()) {
-      throw forbiddenPath();
+      throw uploadError('UPLOAD_INVALID_PATH', 'Destination contains a symlink or is not a directory.');
     }
   }
   return current;
@@ -49,18 +48,17 @@ async function destinationExists(root, relative) {
     catch (error) { if (error.code === 'ENOENT') return false; throw error; }
     if (i === parts.length - 1) return true;
     if (info.isSymbolicLink() || !info.isDirectory()) {
-      throw forbiddenPath();
+      throw uploadError('UPLOAD_INVALID_PATH', 'Destination contains a symlink or is not a directory.');
     }
   }
   return false;
 }
 
-export function createWorkspaceUploadCheckHandler({ resolveProject, getLimits = readUploadLimits, env = process.env }) {
+export function createWorkspaceUploadCheckHandler({ resolveProject, getLimits = readUploadLimits }) {
   return async (req, res) => {
     try {
-      const access = req.projectFiles || await createProjectFileAccess(await resolveProject(req.params.projectName), env);
-      const root = access.root;
-      const target = relativePath(req.body?.targetPath === undefined ? '' : req.body.targetPath, true);
+      const root = await fs.realpath(req.projectRoot ?? await resolveProject(req.params.projectName));
+      const target = relativePath(req.body?.targetPath || '', true);
       const input = req.body?.relativePaths;
       if (!Array.isArray(input) || input.length < 1 || input.length > getLimits().maxFiles) {
         throw uploadError('UPLOAD_MANIFEST_INVALID', 'Invalid file list.');
@@ -69,7 +67,6 @@ export function createWorkspaceUploadCheckHandler({ resolveProject, getLimits = 
       if (new Set(names).size !== names.length) throw uploadError('UPLOAD_MANIFEST_INVALID', 'Duplicate destination paths.');
       const conflicts = [];
       for (const name of names) {
-        await access.resolve(path.posix.join(target, name), { write: true });
         if (await destinationExists(root, path.posix.join(target, name))) conflicts.push(name);
       }
       if (conflicts.length) {
@@ -77,7 +74,6 @@ export function createWorkspaceUploadCheckHandler({ resolveProject, getLimits = 
       }
       return res.json({ success: true });
     } catch (error) {
-      if (sendProjectFileError(res, error)) return;
       return res.status(error.status || 500).json({ error: { code: error.code || 'UPLOAD_FAILED', message: error.message } });
     }
   };
@@ -102,7 +98,7 @@ export async function publishWorkspaceFile(source, destination, signal, io = fs)
   }
 }
 
-export function createWorkspaceFileUploadHandler({ resolveProject, getLimits = readUploadLimits, env = process.env }) {
+export function createWorkspaceFileUploadHandler({ resolveProject, getLimits = readUploadLimits }) {
   const active = new Map();
   return async (req, res) => {
     let root;
@@ -115,15 +111,13 @@ export function createWorkspaceFileUploadHandler({ resolveProject, getLimits = r
     req.once('aborted', abort);
     res.once('close', onClose);
     try {
-      const access = req.projectFiles || await createProjectFileAccess(await resolveProject(req.params.projectName), env);
-      root = access.root;
+      root = await fs.realpath(req.projectRoot ?? await resolveProject(req.params.projectName));
       const limits = getLimits();
       if ((active.get(root) || 0) >= limits.maxConcurrentPerProject) {
         throw uploadError('UPLOAD_CONCURRENCY_LIMIT', 'Too many uploads in this workspace. Please retry shortly.', 429);
       }
       active.set(root, (active.get(root) || 0) + 1);
       registered = true;
-      await access.resolve('.tmp', { write: true });
       const temporaryRoot = await ensureDirectory(root, '.tmp');
       staging = await fs.mkdtemp(path.join(temporaryRoot, 'workspace-upload-'));
       let totalBytes = 0;
@@ -162,7 +156,7 @@ export function createWorkspaceFileUploadHandler({ resolveProject, getLimits = r
       if (controller.signal.aborted) return;
       const files = req.files || [];
       if (!files.length) throw uploadError('UPLOAD_MANIFEST_INVALID', 'No files provided.');
-      const target = relativePath(req.body.targetPath === undefined ? '' : req.body.targetPath, true);
+      const target = relativePath(req.body.targetPath || '', true);
       let names;
       try { names = req.body.relativePaths ? JSON.parse(req.body.relativePaths) : files.map(file => file.originalname); }
       catch { throw uploadError('UPLOAD_MANIFEST_INVALID', 'Invalid file paths.'); }
@@ -180,7 +174,6 @@ export function createWorkspaceFileUploadHandler({ resolveProject, getLimits = r
         }
       }
       for (const name of names) {
-        await access.resolve(path.posix.join(target, name), { write: true });
         await ensureDirectory(root, path.posix.dirname(path.posix.join(target, name)) === '.' ? '' : path.posix.dirname(path.posix.join(target, name)));
       }
       const saved = [];
@@ -193,7 +186,6 @@ export function createWorkspaceFileUploadHandler({ resolveProject, getLimits = r
         const destination = path.join(root, relative);
         try {
           // Recheck parents immediately before publishing the staged file.
-          await access.resolve(relative, { write: true });
           await ensureDirectory(root, path.posix.dirname(relative) === '.' ? '' : path.posix.dirname(relative));
           await publishWorkspaceFile(file.path, destination, controller.signal);
           saved.push({ name, path: destination, size: file.size, mimeType: file.mimetype });
@@ -205,7 +197,6 @@ export function createWorkspaceFileUploadHandler({ resolveProject, getLimits = r
       }
       if (!controller.signal.aborted) res.status(errors.length ? 207 : 200).json({ success: errors.length === 0, files: saved, errors, targetPath: path.join(root, target) });
     } catch (error) {
-      if (!controller.signal.aborted && !res.headersSent && sendProjectFileError(res, error)) return;
       if (!controller.signal.aborted && !res.headersSent) {
         const code = error.code === 'LIMIT_FILE_SIZE' ? 'UPLOAD_FILE_TOO_LARGE'
           : ['LIMIT_FILE_COUNT', 'LIMIT_UNEXPECTED_FILE'].includes(error.code) ? 'UPLOAD_TOO_MANY_FILES' : error.code || 'UPLOAD_FAILED';
