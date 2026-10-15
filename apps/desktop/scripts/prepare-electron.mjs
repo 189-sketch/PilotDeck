@@ -1,4 +1,4 @@
-import { closeSync, createWriteStream, existsSync, openSync, readSync, readFileSync, writeFileSync, renameSync } from 'node:fs';
+import { closeSync, createWriteStream, existsSync, mkdtempSync, openSync, readSync, readFileSync, rmSync, writeFileSync, renameSync } from 'node:fs';
 import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { createRequire } from 'node:module';
@@ -88,7 +88,7 @@ export async function prepareElectron({ desktopRoot = resolve(dirname(fileURLToP
   const { version } = electronRequire('./package.json');
   const dist = join(electronRoot, 'dist');
   const binary = join(dist, 'electron');
-  if (existsSync(binary) && existsSync(join(dist, 'version')) &&
+  if (existsSync(join(dist, '.pilotdeck-prepared')) && existsSync(binary) && existsSync(join(dist, 'version')) &&
       readFileSync(join(dist, 'version'), 'utf8').trim().replace(/^v/, '') === version) {
     const header = Buffer.alloc(20);
     const descriptor = openSync(binary, 'r');
@@ -114,16 +114,24 @@ export async function prepareElectron({ desktopRoot = resolve(dirname(fileURLToP
   extract ||= electronRequire('@electron-internal/extract-zip').extract;
   for (let attempt = 1; attempt <= 3; attempt++) {
     console.log(`[desktop] Electron ${version} linux/${arch}: ${options.mirrorOptions.mirror} (attempt ${attempt}/3)`);
+    let staging;
     try {
       const archive = await download(options);
-      await extract(archive, { dir: dist });
-      if (existsSync(join(dist, 'electron.d.ts'))) renameSync(join(dist, 'electron.d.ts'), join(electronRoot, 'electron.d.ts'));
+      staging = mkdtempSync(join(electronRoot, '.dist-'));
+      await extract(archive, { dir: staging });
+      if (existsSync(join(staging, 'electron.d.ts'))) renameSync(join(staging, 'electron.d.ts'), join(electronRoot, 'electron.d.ts'));
+      // Only publish a distribution after extraction has completed successfully.
+      writeFileSync(join(staging, '.pilotdeck-prepared'), '');
+      rmSync(dist, { recursive: true, force: true });
+      renameSync(staging, dist);
       writeFileSync(join(electronRoot, 'path.txt'), 'electron');
       console.log(`[desktop] Electron ready: ${dist}`);
       return dist;
     } catch (error) {
       console.error(`[desktop] Electron attempt ${attempt} failed: ${error.message}`);
       if (attempt === 3) throw new Error(`Cannot prepare Electron ${version} linux/${arch} after 3 attempts`, { cause: error });
+    } finally {
+      if (staging) rmSync(staging, { recursive: true, force: true });
     }
   }
 }

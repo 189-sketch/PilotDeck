@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -119,7 +119,7 @@ test('CLI exits unsuccessfully when preparation fails', () => {
   assert.match(result.stderr, /Unsupported Linux Electron architecture/);
 });
 
-for (const scenario of ['download', 'cached', 'wrong-arch', 'timeout']) {
+for (const scenario of ['download', 'cached', 'unmarked', 'wrong-arch', 'timeout']) {
   test(`Electron preparation: ${scenario}`, async () => {
     const root = realpathSync(mkdtempSync(join(tmpdir(), 'pilotdeck-electron-')));
     try {
@@ -128,12 +128,13 @@ for (const scenario of ['download', 'cached', 'wrong-arch', 'timeout']) {
       mkdirSync(join(electron, 'dist'), { recursive: true });
       writeFileSync(join(electron, 'package.json'), JSON.stringify({ version: '42.11.1' }));
       writeFileSync(join(electron, 'checksums.json'), '{}');
-      if (scenario === 'cached' || scenario === 'wrong-arch') {
+      if (['cached', 'unmarked', 'wrong-arch'].includes(scenario)) {
         const binary = Buffer.alloc(20);
         binary.set([127, 69, 76, 70]);
-        binary.writeUInt16LE(scenario === 'cached' ? 62 : 183, 18);
+        binary.writeUInt16LE(scenario === 'wrong-arch' ? 183 : 62, 18);
         writeFileSync(join(electron, 'dist/electron'), binary);
         writeFileSync(join(electron, 'dist/version'), '42.11.1');
+        if (scenario !== 'unmarked') writeFileSync(join(electron, 'dist/.pilotdeck-prepared'), '');
       }
       let attempts = 0;
       const action = () => prepareElectron({ desktopRoot: root, arch: 'x64', env: {},
@@ -144,7 +145,8 @@ for (const scenario of ['download', 'cached', 'wrong-arch', 'timeout']) {
           return '/cached/electron.zip';
         }, extract: async (archive, options) => {
           assert.equal(archive, '/cached/electron.zip');
-          assert.equal(options.dir, join(electron, 'dist'));
+          assert.equal(join(options.dir, '..'), electron);
+          assert.notEqual(options.dir, join(electron, 'dist'));
         } });
       if (scenario === 'timeout') {
         await assert.rejects(action, /after 3 attempts/);
@@ -156,3 +158,44 @@ for (const scenario of ['download', 'cached', 'wrong-arch', 'timeout']) {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 }
+
+test('failed extraction is discarded before retries and a later invocation', async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'pilotdeck-electron-extract-')));
+  const electron = join(root, 'node_modules/electron');
+  try {
+    mkdirSync(electron, { recursive: true });
+    writeFileSync(join(root, 'package.json'), '{}');
+    writeFileSync(join(electron, 'package.json'), JSON.stringify({ version: '42.11.1' }));
+    writeFileSync(join(electron, 'checksums.json'), '{}');
+    let downloads = 0;
+    let failExtraction = true;
+    const options = { desktopRoot: root, arch: 'x64', env: {},
+      download: async () => { downloads++; return '/cached/electron.zip'; },
+      extract: async (_archive, { dir }) => {
+        assert.equal(existsSync(join(dir, 'electron')), false, 'each attempt starts with an empty directory');
+        mkdirSync(dir, { recursive: true });
+        const binary = Buffer.alloc(20);
+        binary.set([127, 69, 76, 70]);
+        binary.writeUInt16LE(62, 18);
+        writeFileSync(join(dir, 'electron'), binary);
+        writeFileSync(join(dir, 'version'), '42.11.1');
+        if (failExtraction) throw new Error('extraction interrupted');
+        writeFileSync(join(dir, 'icudtl.dat'), 'complete');
+      },
+    };
+    await assert.rejects(prepareElectron(options), /after 3 attempts/);
+    assert.equal(downloads, 3);
+    assert.equal(existsSync(join(electron, 'dist')), false);
+    assert.equal(existsSync(join(electron, 'path.txt')), false);
+    assert.deepEqual(readdirSync(electron).sort(), ['checksums.json', 'package.json']);
+
+    failExtraction = false;
+    assert.equal(await prepareElectron(options), join(electron, 'dist'));
+    assert.equal(downloads, 4);
+    assert.equal(readFileSync(join(electron, 'dist/icudtl.dat'), 'utf8'), 'complete');
+    assert.equal(readFileSync(join(electron, 'path.txt'), 'utf8'), 'electron');
+    assert.equal(await prepareElectron(options), join(electron, 'dist'));
+    assert.equal(downloads, 4, 'only a successful extraction is reused');
+    assert.equal(readdirSync(electron).some(name => name.startsWith('.dist-')), false);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
