@@ -13,16 +13,24 @@ const artifactDir = process.env.PILOTDECK_CHROME_ARTIFACTS || path.join(root, 'o
 await fs.mkdir(artifactDir, { recursive: true });
 const profile = await fs.mkdtemp(path.join(os.tmpdir(), 'pilotdeck-chrome-'));
 const app = await electron.launch({
+  timeout: 60_000,
   executablePath: createRequire(import.meta.url)(path.join(root, 'apps/desktop/node_modules/electron')),
   args: [path.join(root, 'apps/desktop/scripts/fixtures/desktop-chrome.cjs'),
     ...(process.env.PILOTDECK_CHROME_SCALE ? [`--force-device-scale-factor=${process.env.PILOTDECK_CHROME_SCALE}`] : []),
     ...(process.env.PILOTDECK_CHROME_OZONE ? [`--ozone-platform=${process.env.PILOTDECK_CHROME_OZONE}`] : []),
-    ...(process.env.PILOTDECK_CHROME_DISABLE_SANDBOX ? ['--no-sandbox'] : [])],
+    ...(process.env.PILOTDECK_CHROME_DISABLE_SANDBOX ? ['--no-sandbox'] : []),
+    ...(process.env.PILOTDECK_CHROME_DISABLE_GPU ? ['--disable-gpu', '--disable-dev-shm-usage'] : [])],
   env: { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => key !== 'ELECTRON_RUN_AS_NODE')), PILOTDECK_CHROME_PROFILE: profile },
 });
 app.process().on('exit', (code, signal) => { if (code) console.error('Electron exited', { code, signal }); });
+const errors = [];
+let page;
 try {
-  const page = await app.firstWindow();
+  page = await app.firstWindow();
+  page.on('crash', () => console.error('Desktop renderer crashed'));
+  page.on('console', message => { if (message.type() === 'error') console.error('Renderer:', message.text()); });
+  page.on('requestfailed', request => console.error('Request failed:', request.url(), request.failure()));
+  await expect.poll(() => app.evaluate(() => global.chromeTest.loaded()), { timeout: 30_000 }).toBe(true);
   const projects = [
     { name: 'general', displayName: 'General conversation', kind: 'general', fullPath: '/fixture/general', sessions: [], capabilities: { files: false } },
     { name: 'demo', displayName: 'Desktop design review', kind: 'workspace', fullPath: '/fixture/demo', sessions: [{ id: 'chrome-review', title: 'Native title review', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }], capabilities: { files: true } },
@@ -56,9 +64,8 @@ try {
       } catch {}
     });
   });
-  const errors = [];
   page.on('pageerror', error => errors.push(error.message));
-  await page.goto('http://127.0.0.1:5187');
+  await page.goto('http://127.0.0.1:5187/p/demo/c/chrome-review');
   await expect(page.locator('.app-shell')).toBeVisible({ timeout: 60000 });
   await expect.poll(() => app.evaluate(() => global.chromeTest.state().ready)).toBe(true);
   await expect(page.locator('html')).toHaveAttribute('data-desktop-platform', process.platform);
@@ -483,6 +490,12 @@ try {
   await expect(page.locator('html')).toHaveAttribute('data-desktop-platform', process.platform);
   expect(errors).toEqual([]);
   console.log(JSON.stringify({ passed: true, geometry, unmappedFixtureEndpoints: [...missing], artifactDir }));
+} catch (error) {
+  console.error('Desktop chrome failure:', { url: page?.url(), errors });
+  if (page && !page.isClosed()) {
+    await page.screenshot({ path: path.join(artifactDir, `${platformName}-failure.png`), timeout: 5000 }).catch(() => {});
+  }
+  throw error;
 } finally {
   await app.close();
   await fs.rm(profile, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });

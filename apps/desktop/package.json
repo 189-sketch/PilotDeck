@@ -20,15 +20,15 @@
     "dist:win:x64": "node scripts/check-windows-build-host.mjs x64 && node scripts/build-runtime.mjs && tsc -p tsconfig.json && electron-builder --win --x64 --publish never",
     "dist:win:arm64": "node scripts/check-windows-build-host.mjs arm64 && node scripts/build-runtime.mjs && tsc -p tsconfig.json && electron-builder --win --arm64 --publish never",
     "dist:win:portable": "node scripts/build-runtime.mjs && tsc -p tsconfig.json && electron-builder --win portable --publish never",
-    "dist:linux:arm64": "node scripts/check-linux-build-host.mjs arm64 && umask 022 && PILOTDECK_DESKTOP_NODE_ARCH=arm64 node scripts/build-runtime.mjs && tsc -p tsconfig.json && electron-builder --linux deb --arm64 --publish never",
-    "dist:linux:x64": "node scripts/check-linux-build-host.mjs x64 && umask 022 && PILOTDECK_DESKTOP_NODE_ARCH=x64 node scripts/build-runtime.mjs && tsc -p tsconfig.json && electron-builder --linux deb --x64 --publish never && node scripts/normalize-linux-x64-artifact.mjs",
+    "dist:linux:arm64": "node scripts/check-linux-build-host.mjs arm64 && umask 022 && PILOTDECK_DESKTOP_NODE_ARCH=arm64 node scripts/build-runtime.mjs && tsc -p tsconfig.json && electron-builder --linux deb --arm64 --config.electronDist=node_modules/electron/dist --publish never",
+    "dist:linux:x64": "node scripts/check-linux-build-host.mjs x64 && umask 022 && PILOTDECK_DESKTOP_NODE_ARCH=x64 node scripts/build-runtime.mjs && tsc -p tsconfig.json && electron-builder --linux deb --x64 --config.electronDist=node_modules/electron/dist --publish never && node scripts/normalize-linux-x64-artifact.mjs",
     "download-git-bash": "node scripts/download-git-bash.mjs",
     "download-node": "node scripts/download-node.mjs",
     "download-cua-driver": "node scripts/download-cua-driver.mjs",
     "download-playwright-browsers": "node scripts/download-playwright-browsers.mjs",
     "test": "node --test scripts/*.test.mjs",
-    "dist:linux:rpm:arm64": "node scripts/check-linux-build-host.mjs arm64 rpm && umask 022 && PILOTDECK_DESKTOP_NODE_ARCH=arm64 node scripts/build-runtime.mjs && tsc -p tsconfig.json && electron-builder --linux rpm --arm64 --publish never && node scripts/normalize-linux-rpm-artifact.mjs arm64",
-    "dist:linux:rpm:x64": "node scripts/check-linux-build-host.mjs x64 rpm && umask 022 && PILOTDECK_DESKTOP_NODE_ARCH=x64 node scripts/build-runtime.mjs && tsc -p tsconfig.json && electron-builder --linux rpm --x64 --publish never && node scripts/normalize-linux-rpm-artifact.mjs x64"
+    "dist:linux:rpm:arm64": "node scripts/check-linux-build-host.mjs arm64 rpm && umask 022 && PILOTDECK_DESKTOP_NODE_ARCH=arm64 node scripts/build-runtime.mjs && tsc -p tsconfig.json && electron-builder --linux rpm --arm64 --config.electronDist=node_modules/electron/dist --publish never && node scripts/normalize-linux-rpm-artifact.mjs arm64",
+    "dist:linux:rpm:x64": "node scripts/check-linux-build-host.mjs x64 rpm && umask 022 && PILOTDECK_DESKTOP_NODE_ARCH=x64 node scripts/build-runtime.mjs && tsc -p tsconfig.json && electron-builder --linux rpm --x64 --config.electronDist=node_modules/electron/dist --publish never && node scripts/normalize-linux-rpm-artifact.mjs x64"
   },
   "dependencies": {
     "electron-updater": "^6.8.9"

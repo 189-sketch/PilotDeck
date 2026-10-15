@@ -2,9 +2,32 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import test from 'node:test';
+import { runInNewContext } from 'node:vm';
 
 const { parse } = createRequire(new URL('../../../package.json', import.meta.url))('yaml');
 const workflow = name => parse(readFileSync(new URL(`../../../.github/workflows/${name}.yml`, import.meta.url), 'utf8'));
+
+test('Linux manual acceptance selects native ARM64 while shared builds default to both architectures', () => {
+  const linux = workflow('desktop-linux');
+  assert.equal(linux.on.workflow_dispatch.inputs.architecture.default, 'arm64');
+  assert.deepEqual(linux.on.workflow_dispatch.inputs.architecture.options, ['arm64', 'x64', 'all']);
+  assert.equal(linux.on.workflow_call.inputs.architecture.default, 'all');
+  const evaluate = (expression, context) => JSON.parse(JSON.stringify(runInNewContext(
+    expression.slice(3, -2), { fromJSON: JSON.parse, ...context },
+  )));
+  for (const job of [linux.jobs.deb, linux.jobs.rpm]) {
+    for (const [architecture, expected] of [['arm64', ['arm64']], ['x64', ['x64']], ['all', ['x64', 'arm64']], [undefined, ['x64', 'arm64']]]) {
+      assert.deepEqual(evaluate(job.strategy.matrix.arch, { inputs: { architecture } }), expected);
+    }
+    assert.equal(evaluate(job['runs-on'], { matrix: { arch: 'arm64' } }), 'ubuntu-22.04-arm');
+    assert.equal(evaluate(job['runs-on'], { matrix: { arch: 'x64' } }), 'ubuntu-22.04');
+    assert.ok(job.steps.some(step => step.run?.includes('run-linux-display-smoke.sh x11')));
+    assert.ok(job.steps.some(step => step.run?.includes('run-linux-display-smoke.sh wayland')));
+    assert.ok(job.steps.some(step => step.run?.includes('run-linux-chrome-smoke.sh x11')));
+    assert.ok(job.steps.some(step => step.run?.includes('run-linux-chrome-smoke.sh wayland')));
+  }
+  assert.equal(linux.jobs.rpm.container, 'rockylinux:9');
+});
 
 test('shared native builds cannot select arbitrary source or request release write access', () => {
   for (const platform of ['linux', 'macos', 'windows']) {
