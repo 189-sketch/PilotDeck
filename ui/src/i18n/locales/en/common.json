@@ -1,5 +1,9 @@
 {
   "filePickerFailed": "Could not open or read the file selection. Please try again.",
+  "zoomIndicator": {
+    "label": "Interface zoom",
+    "reset": "Reset"
+  },
   "buttons": {
     "save": "Save",
     "cancel": "Cancel",

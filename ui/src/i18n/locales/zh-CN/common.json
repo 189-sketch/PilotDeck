@@ -1,5 +1,9 @@
 {
   "filePickerFailed": "无法打开或读取文件选择，请重试。",
+  "zoomIndicator": {
+    "label": "界面缩放",
+    "reset": "复位"
+  },
   "buttons": {
     "save": "保存",
     "cancel": "取消",
