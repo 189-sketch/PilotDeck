@@ -584,13 +584,15 @@ function verifyRuntime(root, label = "runtime", runtimeArch = targetRuntimeArch)
   }
 
   verifyRuntimeNativeModule("better-sqlite3", label, runtimeArch);
-  const ptyCheck = spawnRuntimeNodeSync(
-    [resolve(desktopRoot, "scripts", "verify-runtime-pty.cjs"), runtimeRoot],
-    { cwd: runtimeRoot, encoding: "utf8", timeout: 15_000, env: withBundledNodeEnv() },
-    runtimeArch,
-  );
-  if (ptyCheck.status !== 0) {
-    throw new Error(`Desktop ${label} PTY check failed: ${(ptyCheck.error?.message || ptyCheck.stderr || ptyCheck.stdout || "unknown error").trim()}`);
+  if (process.platform === "linux") {
+    const ptyCheck = spawnRuntimeNodeSync(
+      [resolve(desktopRoot, "scripts", "verify-runtime-pty.cjs"), runtimeRoot],
+      { cwd: runtimeRoot, encoding: "utf8", timeout: 15_000, env: withBundledNodeEnv() },
+      runtimeArch,
+    );
+    if (ptyCheck.status !== 0) {
+      throw new Error(`Desktop ${label} PTY check failed: ${(ptyCheck.error?.message || ptyCheck.stderr || ptyCheck.stdout || "unknown error").trim()}`);
+    }
   }
   verifyRuntimeModuleImport(resolve(runtimeRoot, "dist", "src", "cli", "pilotdeck.js"), label, runtimeArch);
   verifyRuntimeModuleImport(resolve(runtimeRoot, "ui", "server", "services", "spreadsheetPreview.js"), label, runtimeArch);

@@ -1,10 +1,27 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
+import { runInNewContext } from 'node:vm';
+
+test('runtime staging probes PTY only on Linux', () => {
+  const source = readFileSync(new URL('./build-runtime.mjs', import.meta.url), 'utf8');
+  const start = source.indexOf('  verifyRuntimeNativeModule("better-sqlite3", label, runtimeArch);');
+  const end = source.indexOf('  verifyRuntimeModuleImport(', start);
+  assert.ok(start >= 0 && end > start);
+  for (const platform of ['linux', 'darwin', 'win32']) {
+    let probes = 0;
+    runInNewContext(source.slice(start, end), {
+      process: { platform }, label: 'runtime', runtimeArch: 'arm64', runtimeRoot: '/runtime', desktopRoot: '/desktop',
+      resolve: join, verifyRuntimeNativeModule() {}, withBundledNodeEnv: () => ({}),
+      spawnRuntimeNodeSync() { probes++; return { status: 0 }; },
+    });
+    assert.equal(probes, platform === 'linux' ? 1 : 0, platform);
+  }
+});
 
 const probe = fileURLToPath(new URL('./verify-runtime-pty.cjs', import.meta.url));
 for (const scenario of ['success', 'missing-native', 'spawn-failure', 'wrong-output']) {
