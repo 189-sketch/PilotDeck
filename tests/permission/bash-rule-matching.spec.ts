@@ -62,3 +62,18 @@ test("allow rules must cover standalone and compound redirections", () => {
 test("allow rules reject continued shell words", () => {
   assert.equal(matches(rule("allow", "npm:*"), "npm test --flag\\\nvalue"), false);
 });
+
+test("allow rules must cover redirect-only command substitutions", () => {
+  for (const pattern of ["npm test", "npm:*"]) {
+    for (const command of [
+      "npm test; X=$(> unauthorized)",
+      "npm test; X=$(>> unauthorized)",
+      "npm test; X=$(< secret)",
+      "npm test $(> unauthorized)",
+      "npm test; X=$(npm test; Y=$(> unauthorized))",
+    ]) {
+      assert.equal(matches(rule("allow", pattern), command), false, command);
+    }
+  }
+  assert.equal(matches(rule("allow", "npm:*"), "npm test $(npm test)"), true);
+});

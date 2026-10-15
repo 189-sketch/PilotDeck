@@ -69,6 +69,15 @@ export function splitBashCommands(command: string): BashCommandList | undefined 
         commands.push(node.text.trim());
       }
     }
+    // A redirect-only substitution, such as $(> file), has no command or
+    // redirected_statement wrapper in this grammar.
+    for (const node of tree.rootNode.descendantsOfType([
+      "file_redirect", "heredoc_redirect", "herestring_redirect",
+    ])) {
+      if (node && node.parent?.type !== "command" && node.parent?.type !== "redirected_statement") {
+        commands.push(node.text.trim());
+      }
+    }
     return { commands, hasError: tree.rootNode.hasError };
   } finally {
     tree.delete();
