@@ -1,4 +1,4 @@
-import { stat } from 'node:fs/promises';
+import { realpath, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { resolveRegisteredProject } from '../services/projectRegistration.js';
 import { isPathInsideOrEqual } from '../utils/pathSafety.js';
@@ -11,10 +11,16 @@ export function createProjectFilesystemMiddleware({ env = process.env } = {}) {
             // Never authorize a project root using request-derived paths or the
             // presentation cache populated by getProjects().
             const projectRoot = await resolveRegisteredProject(req.params.projectName, pilotHome);
+            const [realProjectRoot, realPilotHome] = await Promise.all([
+                realpath(projectRoot),
+                realpath(pilotHome),
+            ]);
             if (
                 isVirtualProjectPath(projectRoot, pilotHome, env)
                 || isPathInsideOrEqual(pilotHome, projectRoot)
                 || isPathInsideOrEqual(projectRoot, pilotHome)
+                || isPathInsideOrEqual(realPilotHome, realProjectRoot)
+                || isPathInsideOrEqual(realProjectRoot, realPilotHome)
             ) {
                 return res.status(403).json({
                     error: { code: 'PROJECT_PATH_FORBIDDEN', message: 'Project file operations are unavailable for this path.' },

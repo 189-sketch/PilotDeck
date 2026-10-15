@@ -8,7 +8,7 @@ import { createProjectFilesystemMiddleware } from './projectFilesystem.js';
 import { isPathInsideOrEqual } from '../utils/pathSafety.js';
 import { createWorkspaceFileUploadHandler, createWorkspaceUploadCheckHandler } from '../services/workspaceFileUpload.js';
 
-let root, home, workspace, server, url;
+let root, home, workspace, server, url, env;
 const source = await fs.readFile(new URL('../index.js', import.meta.url), 'utf8');
 
 // Mount the production handlers without starting the gateway, database or UI.
@@ -41,7 +41,8 @@ beforeEach(async () => {
     const app = express();
     app.use(express.json());
     const authenticateToken = (req, res, next) => req.headers.authorization === 'Bearer test' ? next() : res.sendStatus(401);
-    const guard = createProjectFilesystemMiddleware({ env: { PILOT_HOME: home } });
+    env = { PILOT_HOME: home };
+    const guard = createProjectFilesystemMiddleware({ env });
     mountReportedHandlers(app, authenticateToken, guard);
     const resolveProject = () => { throw new Error('Upload must use the root authorized by middleware'); };
     app.post('/api/projects/:projectName/files/upload/check', authenticateToken, guard, createWorkspaceUploadCheckHandler({ resolveProject }));
@@ -94,6 +95,47 @@ describe('reported project root injection', () => {
             }
         }
         expect((await request('general', '/file?filePath=server-token')).status).toBe(403);
+    });
+
+    it.each([false, true])('rejects canonical home overlaps with a symlinked PILOT_HOME=%s', async (aliasHome) => {
+        if (aliasHome) {
+            const homeAlias = path.join(root, 'configured-home-alias');
+            await fs.symlink(home, homeAlias, 'dir');
+            env.PILOT_HOME = homeAlias;
+        }
+        for (const [id, location] of [['parent', root], ['home', home], ['child', path.join(home, 'projects')]]) {
+            const alias = path.join(root, `${id}-alias`);
+            await fs.symlink(location, alias, 'dir');
+            await fs.mkdir(path.join(home, 'projects', id));
+            await fs.writeFile(path.join(home, 'projects', id, '.cwd'), aliasHome ? location : alias);
+            for (const args of [
+                ['/file?filePath=server-token'], ['/files/content?path=auth.db'],
+                ['/file', 'PUT', { filePath: 'server-token', content: 'changed' }],
+                ['/files', 'DELETE', { path: 'server-token' }],
+                ['/files/upload/check', 'POST', { relativePaths: ['marker'] }],
+            ]) {
+                const response = await request(id, ...args);
+                expect(response.status).toBe(403);
+                expect((await response.json()).error.code).toBe('PROJECT_PATH_FORBIDDEN');
+            }
+            const form = new FormData();
+            form.append('files', new Blob(['changed']), 'marker');
+            expect((await fetch(`${url}${id}/files/upload`, {
+                method: 'POST', headers: { Authorization: 'Bearer test' }, body: form,
+            })).status).toBe(403);
+        }
+        expect(await fs.readFile(path.join(home, 'server-token'), 'utf8')).toBe('fake-server-token');
+        expect(await fs.readFile(path.join(home, 'auth.db'), 'utf8')).toBe('fake-auth-database');
+        expect((await request('demo', '/file?filePath=normal.txt')).status).toBe(200);
+    });
+
+    it('allows registered symlink aliases of ordinary workspaces', async () => {
+        const alias = path.join(root, 'workspace-alias');
+        await fs.symlink(workspace, alias, 'dir');
+        await fs.writeFile(path.join(home, 'projects/demo/.cwd'), alias);
+        expect((await (await request('demo', '/file?filePath=normal.txt')).json()).content).toBe('normal');
+        expect((await request('demo', '/file', 'PUT', { filePath: 'normal.txt', content: 'edited' })).status).toBe(200);
+        expect(await fs.readFile(path.join(workspace, 'normal.txt'), 'utf8')).toBe('edited');
     });
 
     it('keeps legitimate project read, download, write, delete and upload behavior', async () => {
