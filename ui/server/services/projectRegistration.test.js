@@ -54,12 +54,19 @@ describe('registered project resolution', () => {
     await fs.mkdir(legacy);
     const { id, storage } = await f.register(legacy, createProjectId(legacy), false);
     expect(await resolveRegisteredProject(id, f.home)).toBe(legacy);
-    for (const marker of ['', 'relative', path.join(f.root, 'missing')]) {
+    for (const marker of ['', 'relative']) {
       await fs.writeFile(path.join(storage, '.cwd'), marker);
       await expect(resolveRegisteredProject(id, f.home)).rejects.toMatchObject({ code: 'PROJECT_NOT_FOUND' });
     }
     await fs.rm(storage, { recursive: true });
     await fs.symlink(legacy, storage);
     await expect(resolveRegisteredProject(id, f.home)).rejects.toMatchObject({ code: 'PROJECT_NOT_FOUND' });
+  });
+  it('resolves registered identities after the workspace is removed', async () => {
+    const f = await fixture();
+    const { id } = await f.register(f.workspace);
+    await fs.rm(f.workspace, { recursive: true });
+    expect(await resolveRegisteredProject(id, f.home)).toBe(f.workspace);
+    expect(await resolveRegisteredProject(f.workspace, f.home)).toBe(f.workspace);
   });
 });

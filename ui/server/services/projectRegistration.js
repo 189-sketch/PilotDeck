@@ -33,7 +33,8 @@ export async function readRegisteredProject(projectsDir, id) {
     }
     return null;
   }
-  return (await fs.stat(root).catch(() => null))?.isDirectory() ? path.resolve(root) : null;
+  // Saved sessions outlive their workspace; file routes check root availability.
+  return path.resolve(root);
 }
 
 export async function resolveRegisteredProject(name, pilotHome) {

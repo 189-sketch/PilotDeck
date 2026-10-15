@@ -185,6 +185,16 @@ describe('production project file router', () => {
     await forbidden(await request('demo', '/files'), 404);
   });
 
+  it('rejects file access when a registered workspace no longer exists', async () => {
+    const removedWorkspace = path.join(root, 'removed-workspace');
+    await fs.mkdir(removedWorkspace);
+    await fs.writeFile(path.join(home, 'projects', 'demo', '.cwd'), removedWorkspace);
+    await fs.rm(removedWorkspace, { recursive: true });
+    await forbidden(await request('demo', '/files'), 404);
+    await forbidden(await request('demo', '/file', 'PUT', { filePath: 'new.txt', content: 'new' }), 404);
+    await expect(fs.access(removedWorkspace)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
   it('rejects a symlink staging directory and chat attachment target without changing secrets', async () => {
     await fs.symlink(home, path.join(workspace, '.tmp'));
     await forbidden(await fetch(`${url}demo/files/upload`, { method: 'POST', headers: { Authorization: 'Bearer test' }, body: uploadForm() }));

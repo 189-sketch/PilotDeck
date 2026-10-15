@@ -5,6 +5,7 @@ import path from 'node:path';
 
 const gateway = vi.hoisted(() => ({
     closeSession: vi.fn(),
+    closeProjectSessions: vi.fn(),
     describeProject: vi.fn(),
     listProjects: vi.fn(),
     listSessions: vi.fn(),
@@ -13,6 +14,7 @@ const gateway = vi.hoisted(() => ({
 vi.mock('./pilotdeck-bridge.js', () => ({
     getPilotDeckGateway: vi.fn(async () => gateway),
     beginSessionDeletion: vi.fn(() => () => {}),
+    beginProjectDeletion: vi.fn(() => () => {}),
     isGatewayUnavailableError: (error) => /Gateway WebSocket/i.test(error?.message || ''),
     withPilotDeckGatewayReadRetry: vi.fn(async (operation) => operation(gateway)),
 }));
@@ -21,7 +23,7 @@ vi.mock('./database/db.js', () => ({
     applyCustomSessionNames: vi.fn(),
 }));
 
-import { addProjectManually, deleteSession, extractProjectDirectory, getProjects, getProjectsSnapshot } from './projects.js';
+import { addProjectManually, deleteProject, deleteSession, extractProjectDirectory, getProjects, getProjectsSnapshot, getSessions } from './projects.js';
 import { createProjectId, sanitizeSessionIdForPath } from './utils/pilotPaths.js';
 
 const originalPilotHome = process.env.PILOT_HOME;
@@ -283,5 +285,27 @@ describe('deleteSession lifecycle', () => {
         gateway.closeSession.mockRejectedValue(new Error('Gateway unavailable'));
         await expect(deleteSession(project, sessionId)).rejects.toThrow('Gateway unavailable');
         expect(await fs.readFile(transcript, 'utf8')).toBe('original transcript');
+    });
+    it('paginates saved sessions after the workspace is removed', async () => {
+        await fs.rm(project, { recursive: true });
+        gateway.listSessions.mockResolvedValue({ sessions: [{ sessionId, lastModified: 400 }] });
+        gateway.describeProject.mockResolvedValue({ sessionCount: 6 });
+        const result = await getSessions(createProjectId(project), 5, 5);
+        expect(gateway.listSessions).toHaveBeenCalledWith({ projectKey: project, limit: 5, cursor: '5' });
+        expect(result.sessions[0].id).toBe(sessionId);
+        expect(result.total).toBe(6);
+    });
+    it('deletes a saved session after the workspace is removed', async () => {
+        await fs.rm(project, { recursive: true });
+        gateway.closeSession.mockResolvedValue(undefined);
+        expect(await deleteSession(createProjectId(project), sessionId)).toBe(true);
+        await expect(fs.access(transcript)).rejects.toMatchObject({ code: 'ENOENT' });
+    });
+    it('deletes project storage after the workspace is removed', async () => {
+        await fs.rm(project, { recursive: true });
+        gateway.closeProjectSessions.mockResolvedValue(undefined);
+        expect(await deleteProject(createProjectId(project), true)).toBe(true);
+        expect(gateway.closeProjectSessions).toHaveBeenCalledWith({ projectKey: project });
+        await expect(fs.access(path.dirname(path.dirname(transcript)))).rejects.toMatchObject({ code: 'ENOENT' });
     });
 });
