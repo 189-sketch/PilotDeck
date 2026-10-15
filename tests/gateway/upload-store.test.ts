@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm, rename, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { extname, join } from "node:path";
 import { Readable } from "node:stream";
 import test from "node:test";
 import { UploadStore } from "../../src/gateway/dialog/UploadStore.js";
@@ -47,6 +47,40 @@ test("upload store persists, verifies, and resolves streamed attachments", async
   assert.equal(completed.uploadedBytes, 5);
   const attachments = await store.verifyAttachment(created.uploadId, project);
   assert.equal(await readFile(attachments[0]!.path, "utf8"), "hello");
+});
+
+test("upload paths preserve safe extensions without colliding across file IDs", async (t) => {
+  const project = await mkdtemp(join(tmpdir(), "pilotdeck-upload-extensions-"));
+  t.after(() => rm(project, { recursive: true, force: true }));
+  const store = new UploadStore({ resolveProject: async () => project, listProjects: async () => [project] });
+  const files = [
+    { clientFileId: "file", name: "report.pdf", extension: ".pdf" },
+    { clientFileId: "file.pdf", name: "README", extension: "" },
+    { clientFileId: "photo", name: "Screen Shot.PNG", extension: ".png" },
+    { clientFileId: "photo.png", name: "README", extension: "" },
+    { clientFileId: "office", name: "notes.docx", extension: ".docx" },
+    { clientFileId: "invalid", name: "weird.ext with space", extension: "" },
+    { clientFileId: "long", name: "file.abcdefghijklmnopq", extension: "" },
+  ];
+  const created = await store.create(project, files.map((file) => ({
+    clientFileId: file.clientFileId,
+    name: file.name,
+    relativePath: file.name,
+    size: Buffer.byteLength(file.clientFileId),
+  })));
+  for (const file of files) {
+    const attachment = await store.writePart(created.uploadId, file.clientFileId, Readable.from([file.clientFileId]));
+    assert.equal(attachment.attachmentId, file.clientFileId);
+    assert.equal(extname(attachment.path), file.extension);
+  }
+  assert.equal((await store.complete(created.uploadId)).status, "completed");
+  const reopened = new UploadStore({ resolveProject: async () => project, listProjects: async () => [project] });
+  const attachments = await reopened.verifyAttachment(created.uploadId, project);
+  assert.equal(attachments.length, files.length);
+  assert.equal(new Set(attachments.map((attachment) => attachment.path)).size, files.length);
+  for (const attachment of attachments) {
+    assert.equal(await readFile(attachment.path, "utf8"), attachment.attachmentId);
+  }
 });
 
 test("upload store rejects unsafe manifests and size mismatches", async (t) => {

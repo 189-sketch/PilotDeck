@@ -149,7 +149,9 @@ export class UploadStore {
     record = await this.mutate(record, (next) => { next.status = "uploading"; });
     // Keep the original extension: read_file, document skills and converters
     // classify files by extension, and an opaque id alone reads as text.
-    const destination = join(this.filesDir(record), `${clientFileId}${safeFileExtension(expected.name)}`);
+    // Separate the ID from the extension so distinct IDs cannot share a path.
+    const fileDir = join(this.filesDir(record), `attachment-${clientFileId}`);
+    const destination = join(fileDir, `content${safeFileExtension(expected.name)}`);
     const hash = createHash("sha256");
     let bytes = 0;
     let pendingProgressBytes = 0;
@@ -177,6 +179,7 @@ export class UploadStore {
       },
     });
     try {
+      await mkdir(fileDir, { recursive: true });
       await pipeline(stream, meter, createWriteStream(destination, { flags: "wx", mode: 0o600 }));
       flushProgress();
       await this.drainUpdates(uploadId);
