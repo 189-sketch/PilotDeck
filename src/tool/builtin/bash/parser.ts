@@ -43,6 +43,11 @@ export interface BashCommandList {
   hasError: boolean;
 }
 
+// The grammar can split a continued shell word into multiple argv nodes.
+export function hasBashLineContinuation(command: string): boolean {
+  return /\\\r?\n/u.test(command);
+}
+
 /**
  * Splits `command` into its simple commands, like opencode's `scanLegacy` in
  * `packages/core/src/shell/parse.ts`. Returns undefined when the parser is not loaded.
@@ -57,6 +62,13 @@ export function splitBashCommands(command: string): BashCommandList | undefined 
       .descendantsOfType("command")
       .filter((node): node is Node => node !== null)
       .map(bashCommandSource);
+    // Redirections can execute without a simple command, or apply to a whole
+    // compound statement. Those effects must also be covered by allow rules.
+    for (const node of tree.rootNode.descendantsOfType("redirected_statement")) {
+      if (node && node.childForFieldName("body")?.type !== "command") {
+        commands.push(node.text.trim());
+      }
+    }
     return { commands, hasError: tree.rootNode.hasError };
   } finally {
     tree.delete();

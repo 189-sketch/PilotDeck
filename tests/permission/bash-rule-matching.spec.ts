@@ -43,3 +43,22 @@ test("ask and deny rules match when any command matches", () => {
     assert.equal(matches(rmRule, "echo rm"), false);
   }
 });
+
+test("allow rules must cover standalone and compound redirections", () => {
+  for (const pattern of ["npm test", "npm:*"]) {
+    for (const command of [
+      "npm test; > unauthorized",
+      "npm test\n>> unauthorized",
+      "npm test; { > unauthorized; }",
+      "(npm test) > unauthorized",
+      "{ npm test; } > unauthorized",
+    ]) {
+      assert.equal(matches(rule("allow", pattern), command), false, command);
+    }
+  }
+  assert.equal(matches(rule("allow", "npm:*"), "npm test > test.log"), true);
+});
+
+test("allow rules reject continued shell words", () => {
+  assert.equal(matches(rule("allow", "npm:*"), "npm test --flag\\\nvalue"), false);
+});

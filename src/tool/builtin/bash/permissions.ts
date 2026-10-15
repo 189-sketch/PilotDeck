@@ -1,6 +1,6 @@
 import type { Node } from "web-tree-sitter";
 import type { PermissionResult } from "../../../permission/index.js";
-import { bashCommandSource, parseBash } from "./parser.js";
+import { bashCommandSource, hasBashLineContinuation, parseBash } from "./parser.js";
 
 const COMMAND_POSITION = String.raw`(?:^|[;&|]\s*)`;
 const SHELL_SEGMENT = String.raw`[^;&|\n]*`;
@@ -208,7 +208,7 @@ function analyzeShellCommand(command: string): ShellAnalysis | undefined {
   try {
     const commandTexts: string[] = [];
     const argvs: ShellWord[][] = [];
-    let readOnlySyntax = !tree.rootNode.hasError;
+    let readOnlySyntax = !tree.rootNode.hasError && !hasBashLineContinuation(command);
     const stack: Node[] = [tree.rootNode];
     while (stack.length > 0) {
       const node = stack.pop()!;
@@ -287,7 +287,7 @@ function readLiteralWord(node: Node | null): ShellWord {
 /** Reading files and discarding or duplicating output are fine; writing to a file is not. */
 function isReadOnlyFileRedirect(redirect: Node): boolean {
   const operator = redirect.children.find((child) => child && !child.isNamed)?.type;
-  const destination = redirect.namedChildren.filter((child) => child?.type !== "file_descriptor").at(-1);
+  const destination = redirect.childForFieldName("destination");
   const target = destination ? readLiteralWord(destination) : undefined;
   if (operator === "<" || target === "/dev/null") {
     return true;

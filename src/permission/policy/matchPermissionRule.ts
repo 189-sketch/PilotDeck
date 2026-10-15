@@ -1,6 +1,6 @@
 import path from "node:path";
 import { realpathSync } from "node:fs";
-import { splitBashCommands } from "../../tool/builtin/bash/parser.js";
+import { hasBashLineContinuation, splitBashCommands } from "../../tool/builtin/bash/parser.js";
 import { resolveRealWritePath } from "../../tool/builtin/filesystem/pathSafety.js";
 import type { PermissionContext, PermissionRule } from "../protocol/types.js";
 
@@ -51,6 +51,7 @@ function matchBashPattern(rule: PermissionRule, input: unknown): boolean {
   const parsed = splitBashCommands(command);
   if (rule.behavior === "allow") {
     return parsed !== undefined
+      && !hasBashLineContinuation(command)
       && !parsed.hasError
       && parsed.commands.length > 0
       && parsed.commands.every((part) => pattern.test(part));

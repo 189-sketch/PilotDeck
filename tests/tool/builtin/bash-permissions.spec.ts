@@ -96,3 +96,22 @@ test("syntax outside the read-only subset asks", () => {
 test("hard-deny patterns do not fire on heredoc text", () => {
   assert.equal(classify("cat <<'EOF'\nrm -rf /\nEOF"), "passthrough");
 });
+
+test("redirection checks the actual target before trailing command arguments", () => {
+  for (const command of ["ls > output /dev/null", "ls 2> output /dev/null", "cat >> output /dev/null"]) {
+    assert.equal(isReadOnlyShellCommand(command), false, command);
+    assert.equal(classify(command), "ask", command);
+  }
+  assert.equal(isReadOnlyShellCommand("ls > /dev/null README.md"), true);
+});
+
+test("continued words cannot hide mutating options", () => {
+  for (const command of [
+    "git diff --out\\\nput=output",
+    "pwd && find . -de\\\nlete",
+    "git diff --out\\\r\nput=output",
+  ]) {
+    assert.equal(isReadOnlyShellCommand(command), false, command);
+    assert.equal(classify(command), "ask", command);
+  }
+});
