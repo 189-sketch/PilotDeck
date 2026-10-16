@@ -16,6 +16,8 @@ declare global {
     switchProject?: (projectName: string) => boolean;
     pilotdeckDesktop?: {
       platform?: string;
+      getZoomFactor?: () => number;
+      resetZoom?: () => void;
       getAboutInfo?: () => Promise<DesktopAboutInfo>;
       setMenuState?: (state: DesktopMenuState) => Promise<void>;
       onCommand?: (callback: (command: DesktopCommand) => void) => () => void;

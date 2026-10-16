@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer, type IpcRendererEvent } from "electron";
+import { contextBridge, ipcRenderer, webFrame, type IpcRendererEvent } from "electron";
 
 import { installWindowChrome } from "./preloadChrome";
 import type { DesktopCommand, DesktopMenuState } from "./desktopCommands";
@@ -16,6 +16,12 @@ type RuntimeStatus = {
 
 contextBridge.exposeInMainWorld("pilotdeckDesktop", {
   platform: process.platform,
+  // Zoom roles in the application menu drive these; the renderer polls the
+  // factor on window resize to show transient feedback (webFrame has no events).
+  getZoomFactor: () => webFrame.getZoomFactor(),
+  resetZoom: () => {
+    webFrame.setZoomLevel(0);
+  },
   setMenuState: (state: DesktopMenuState) => ipcRenderer.invoke("pilotdeck:menu-state", state),
   onCommand: (callback: (command: DesktopCommand) => void) => {
     const listener = (_event: IpcRendererEvent, command: DesktopCommand) => callback(command);
