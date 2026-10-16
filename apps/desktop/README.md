@@ -128,6 +128,14 @@ installer lifecycle checks and verifies
 the packaged Electron, Node, Git and native modules on each native runner.
 Portable Git's MSYS Bash may use x64 emulation on Windows ARM64.
 
+For Linux-only acceptance, manually run the `Linux` workflow
+(`desktop-linux.yml`) on the branch under test and select `arm64`, `x64` or
+`all`. Manual runs default to native ARM64 and execute both DEB and RPM jobs,
+including installation, RPM upgrade, native modules, updater and X11/Wayland
+GUI checks. Installers and GUI screenshots are retained as Actions artifacts;
+this workflow does not publish a release. PR and release callers still default
+to both architectures.
+
 Release installer filenames retain the existing
 `PilotDeck-<version>-<os>-<arch>` pattern. Windows installers end in `-setup.exe`.
 Windows x64 continues to use `latest-x64.yml`; ARM64 uses `latest-arm64.yml`.
@@ -152,6 +160,21 @@ Each packaging script stages one architecture-matched, production-only runtime
 in `.runtime/app` before calling `electron-builder`; the final app should not
 include the other macOS architecture or the workspace development dependency
 tree.
+
+Linux packaging and chrome smoke tests prepare the installed Electron version
+through `scripts/prepare-electron.mjs`. The default download source is the
+official Electron release; `PILOTDECK_DESKTOP_DOWNLOAD_MIRROR=china` selects
+`https://cdn.npmmirror.com/binaries/electron/` with version directories without
+the `v` prefix. Explicit Electron mirror configuration (including npm config
+variables) takes priority over the China preset; the version directory follows
+the selected mirror unless `ELECTRON_CUSTOM_DIR` or its npm equivalent is set.
+Downloads automatically honor `HTTP_PROXY`, `HTTPS_PROXY` and `NO_PROXY`
+(including lowercase variants), without requiring `ELECTRON_GET_USE_PROXY`.
+Set `electron_config_cache` to reuse a task-local archive cache. Preparation
+reuses an extracted distribution with the matching version and architecture,
+retries downloads up to three times, and applies 15-second connection,
+60-second idle and 15-minute total timeouts to each download. Linux packaging
+passes this distribution to electron-builder via `electronDist`.
 
 See [`docs/release.md`](../../docs/release.md) for the daily
 release policy, required GitHub Secrets, manual recovery, and Web deployment
