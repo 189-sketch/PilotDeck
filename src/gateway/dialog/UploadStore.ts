@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { createReadStream, createWriteStream } from "node:fs";
 import { mkdir, open, readFile, readdir, realpath, rename, rm, stat } from "node:fs/promises";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { EventEmitter } from "node:events";
 import { Transform, type Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
@@ -147,7 +147,11 @@ export class UploadStore {
       throw new DialogGatewayError("UPLOAD_MANIFEST_MISMATCH", `Unexpected or duplicate file part: ${clientFileId}`);
     }
     record = await this.mutate(record, (next) => { next.status = "uploading"; });
-    const destination = join(this.filesDir(record), clientFileId);
+    // Keep the original extension: read_file, document skills and converters
+    // classify files by extension, and an opaque id alone reads as text.
+    // Separate the ID from the extension so distinct IDs cannot share a path.
+    const fileDir = join(this.filesDir(record), `attachment-${clientFileId}`);
+    const destination = join(fileDir, `content${safeFileExtension(expected.name)}`);
     const hash = createHash("sha256");
     let bytes = 0;
     let pendingProgressBytes = 0;
@@ -175,6 +179,7 @@ export class UploadStore {
       },
     });
     try {
+      await mkdir(fileDir, { recursive: true });
       await pipeline(stream, meter, createWriteStream(destination, { flags: "wx", mode: 0o600 }));
       flushProgress();
       await this.drainUpdates(uploadId);
@@ -378,6 +383,10 @@ function isSafeRelativePath(value: unknown): value is string {
   const parts = value.split("/"); return parts.every((part) => part !== "" && part !== "." && part !== "..");
 }
 function isSafeUploadId(value: string): boolean { return /^[A-Za-z0-9._-]{1,128}$/.test(value) && !value.includes(".."); }
+function safeFileExtension(name: string): string {
+  const extension = extname(name).toLowerCase();
+  return /^\.[a-z0-9]{1,16}$/.test(extension) ? extension : "";
+}
 function assertUploadId(value: string): void { if (!isSafeUploadId(value)) throw new DialogGatewayError("UPLOAD_NOT_FOUND", "Invalid uploadId."); }
 async function sha256File(path: string): Promise<string> {
   const hash = createHash("sha256");
