@@ -24,15 +24,19 @@ jobs:
       OBS_ENDPOINT: https://obs.cn-north-4.myhuaweicloud.com
       AWS_DEFAULT_REGION: cn-north-4
       AWS_EC2_METADATA_DISABLED: "true"
-      AWS_ACCESS_KEY_ID: ${{ secrets.HUAWEICLOUD_ACCESS_KEY_ID }}
-      AWS_SECRET_ACCESS_KEY: ${{ secrets.HUAWEICLOUD_SECRET_ACCESS_KEY }}
     steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
       - name: Check credentials
+        env:
+          OBS_CREDENTIALS_BEARER_TOKEN: ${{ secrets.OBS_CREDENTIALS_BEARER_TOKEN }}
         shell: bash
         run: |
           set -euo pipefail
-          if [[ -z "$AWS_ACCESS_KEY_ID" || -z "$AWS_SECRET_ACCESS_KEY" ]]; then
-            echo "::error::Required Huawei Cloud repository secrets are missing."
+          if [[ -z "$OBS_CREDENTIALS_BEARER_TOKEN" ]]; then
+            echo "::error::Repository secret OBS_CREDENTIALS_BEARER_TOKEN is missing."
             exit 1
           fi
 
@@ -43,15 +47,6 @@ jobs:
           python3 -m venv "$RUNNER_TEMP/obs-cli"
           "$RUNNER_TEMP/obs-cli/bin/pip" install 'awscli>=1.36,<2'
           echo "$RUNNER_TEMP/obs-cli/bin" >> "$GITHUB_PATH"
-
-      - name: Check OBS access before downloading
-        shell: bash
-        run: |
-          set -euo pipefail
-          aws configure set default.s3.addressing_style path
-          aws s3api list-objects-v2 --bucket "$OBS_BUCKET" \
-            --prefix "github-releases/$GH_REPO/" --max-keys 1 \
-            --endpoint-url "$OBS_ENDPOINT" --query KeyCount --output text
 
       - name: Resolve latest formal release
         id: release
@@ -69,7 +64,7 @@ jobs:
           tag = release["tag_name"]
           if any(c in tag for c in "\r\n"):
               raise SystemExit("Release tag contains a newline")
-          prefix = f"github-releases/{os.environ['GH_REPO']}/{tag}/"
+          prefix = f"PilotDeck/{tag}/"
           with open(os.environ["GITHUB_OUTPUT"], "a") as output:
               output.write(f"tag={tag}\ncount={len(assets)}\nprefix={prefix}\n")
           PY
@@ -93,35 +88,14 @@ jobs:
           print(f"Verified {len(expected)} downloaded assets")
           PY
 
-      - name: Upload assets to OBS
+      - name: Obtain temporary credentials, upload and verify OBS assets
         env:
           OBS_PREFIX: ${{ steps.release.outputs.prefix }}
+          OBS_CREDENTIALS_BEARER_TOKEN: ${{ secrets.OBS_CREDENTIALS_BEARER_TOKEN }}
         shell: bash
         run: |
           set -euo pipefail
-          aws configure set default.s3.addressing_style path
-          aws s3 sync release-assets/ "s3://$OBS_BUCKET/$OBS_PREFIX" \
-            --endpoint-url "$OBS_ENDPOINT" --only-show-errors
-
-      - name: Verify OBS asset names and sizes
-        env:
-          OBS_PREFIX: ${{ steps.release.outputs.prefix }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          aws s3api list-objects-v2 --bucket "$OBS_BUCKET" --prefix "$OBS_PREFIX" \
-            --endpoint-url "$OBS_ENDPOINT" --output json > obs-objects.json
-          python3 - <<'PY'
-          import json, os
-          from pathlib import Path
-          assets = json.loads(Path("release.json").read_text())["assets"]
-          expected = {os.environ["OBS_PREFIX"] + asset["name"]: asset["size"] for asset in assets}
-          objects = json.loads(Path("obs-objects.json").read_text()).get("Contents", [])
-          actual = {obj["Key"]: obj["Size"] for obj in objects}
-          if actual != expected:
-              raise SystemExit("OBS object names or sizes differ from the resolved release")
-          print(f"Verified {len(expected)} OBS objects")
-          PY
+          python3 .github/scripts/release_to_obs.py
 
       - name: Write synchronization summary
         if: ${{ always() }}
