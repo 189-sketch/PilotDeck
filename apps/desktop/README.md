@@ -165,7 +165,11 @@ Linux packaging and chrome smoke tests prepare the installed Electron version
 through `scripts/prepare-electron.mjs`. The default download source is the
 official Electron release; `PILOTDECK_DESKTOP_DOWNLOAD_MIRROR=china` selects
 `https://cdn.npmmirror.com/binaries/electron/` with version directories without
-the `v` prefix. Explicit `ELECTRON_MIRROR` and `ELECTRON_CUSTOM_DIR` take priority.
+the `v` prefix. Explicit Electron mirror configuration (including npm config
+variables) takes priority over the China preset; the version directory follows
+the selected mirror unless `ELECTRON_CUSTOM_DIR` or its npm equivalent is set.
+Downloads automatically honor `HTTP_PROXY`, `HTTPS_PROXY` and `NO_PROXY`
+(including lowercase variants), without requiring `ELECTRON_GET_USE_PROXY`.
 Set `electron_config_cache` to reuse a task-local archive cache. Preparation
 reuses an extracted distribution with the matching version and architecture,
 retries downloads up to three times, and applies 15-second connection,

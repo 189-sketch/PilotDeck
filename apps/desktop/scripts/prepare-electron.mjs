@@ -7,15 +7,33 @@ import { fileURLToPath } from 'node:url';
 import { isChinaMirrorPreset } from './download-sources.mjs';
 
 export function electronDownloadOptions(version, arch, env = process.env) {
-  const mirror = env.ELECTRON_MIRROR?.trim() || (isChinaMirrorPreset(env)
+  // Match @electron/get's configuration precedence before choosing directory defaults.
+  const configured = name => {
+    const snake = name.replace(/([a-z])([A-Z])/g, '$1_$2').toLowerCase();
+    return [env[`npm_config_electron_${name.toLowerCase()}`], env[`NPM_CONFIG_ELECTRON_${snake.toUpperCase()}`],
+      env[`npm_config_electron_${snake}`], env[`npm_package_config_electron_${name}`],
+      env[`npm_package_config_electron_${snake}`], env[`ELECTRON_${snake.toUpperCase()}`]]
+      .map(value => value?.trim()).find(Boolean);
+  };
+  const mirror = configured('mirror') || (isChinaMirrorPreset(env)
     ? 'https://cdn.npmmirror.com/binaries/electron/'
     : 'https://github.com/electron/electron/releases/download/');
+  const base = mirror.replace(/\/*$/, '/');
+  const customDir = configured('customDir') || (new URL(base).hostname === 'cdn.npmmirror.com' ? '{{ version }}' : `v${version}`);
+  const customFilename = configured('customFilename');
   return {
     version, arch, platform: 'linux', artifactName: 'electron',
     cacheRoot: env.electron_config_cache || undefined,
     mirrorOptions: {
-      mirror: mirror.replace(/\/*$/, '/'),
-      customDir: env.ELECTRON_CUSTOM_DIR || (mirror.includes('npmmirror.com') ? '{{ version }}' : `v${version}`),
+      mirror: base,
+      customDir,
+      // Pin the resolved URL so @electron/get cannot reapply a different mirror.
+      resolveAssetURL: async details => {
+        const directory = customDir.replace('{{ version }}', details.version.replace(/^v/, ''));
+        const filename = customFilename || (details.isGeneric ? details.artifactName
+          : `${details.artifactName}-${details.version}-${details.platform}-${details.arch}.zip`);
+        return `${base}${directory}/${filename}`;
+      },
     },
     downloadOptions: {
       getProgressCallback: progress => {
@@ -28,6 +46,25 @@ export function electronDownloadOptions(version, arch, env = process.env) {
   };
 }
 let lastProgress = 0;
+
+export function createElectronDownloader(electronRequire, env = process.env) {
+  const getRequire = createRequire(electronRequire.resolve('@electron/get'));
+  const { fetch, EnvHttpProxyAgent } = getRequire('undici');
+  const value = (upper, lower) => [env[upper], env[lower]].map(item => item?.trim()).find(Boolean);
+  const httpProxy = value('HTTP_PROXY', 'http_proxy');
+  const httpsProxy = value('HTTPS_PROXY', 'https_proxy');
+  if (!httpProxy && !httpsProxy) return boundedDownloader(fetch);
+  return { async download(url, target, options) {
+    const agent = new EnvHttpProxyAgent({ httpProxy: httpProxy || '', httpsProxy: httpsProxy || httpProxy || '',
+      noProxy: value('NO_PROXY', 'no_proxy') || '' });
+    try {
+      await boundedDownloader((address, request) => fetch(address, { ...request, dispatcher: agent }))
+        .download(url, target, options);
+    } finally {
+      await agent.destroy();
+    }
+  } };
+}
 
 export const downloadTimeouts = { connect: 15_000, socket: 60_000, request: 900_000 };
 export function boundedDownloader(request = globalThis.fetch, timeouts = downloadTimeouts) {
@@ -107,9 +144,7 @@ export async function prepareElectron({ desktopRoot = resolve(dirname(fileURLToP
   if (!download) {
     const electronGet = electronRequire('@electron/get');
     download = electronGet.downloadArtifact;
-    // Use the same dispatcher as @electron/get's ELECTRON_GET_USE_PROXY support.
-    const getRequire = createRequire(electronRequire.resolve('@electron/get'));
-    options.downloader = boundedDownloader(getRequire('undici').fetch);
+    options.downloader = createElectronDownloader(electronRequire, env);
   }
   extract ||= electronRequire('@electron-internal/extract-zip').extract;
   for (let attempt = 1; attempt <= 3; attempt++) {

@@ -1,14 +1,14 @@
 import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import test from 'node:test';
 import { createRequire } from 'node:module';
 import { connect } from 'node:net';
 import { createServer } from 'node:http';
 import { spawnSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
-import { boundedDownloader, downloadTimeouts, electronDownloadOptions, prepareElectron } from './prepare-electron.mjs';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { boundedDownloader, createElectronDownloader, downloadTimeouts, electronDownloadOptions, prepareElectron } from './prepare-electron.mjs';
 
 test('downloader enforces connection and total timeout', async () => {
   const request = (_url, { signal }) => new Promise((_resolve, reject) => {
@@ -63,17 +63,22 @@ test('HTTP errors and redirects close streaming response bodies', async () => {
   }
 });
 
-test('downloader honors Electron proxy dispatcher for downloads', async () => {
+test('configured proxies work without ELECTRON_GET_USE_PROXY, including redirects and NO_PROXY', async () => {
   const require = createRequire(import.meta.url);
   const electronRequire = createRequire(require.resolve('electron/package.json'));
-  const getRequire = createRequire(electronRequire.resolve('@electron/get'));
-  const { fetch, EnvHttpProxyAgent } = getRequire('undici');
   const root = mkdtempSync(join(tmpdir(), 'pilotdeck-electron-proxy-'));
-  const target = createServer((_req, res) => res.end('proxied archive'));
+  const target = createServer((req, res) => {
+    if (req.url === '/redirect') { res.writeHead(302, { location: '/archive' }); res.end(); }
+    else res.end('proxied archive');
+  });
   const proxy = createServer();
   let tunnels = 0;
   proxy.on('connect', (_req, socket, head) => {
     tunnels++;
+    if (_req.url === 'electron.invalid:443') {
+      socket.end('HTTP/1.1 502 Proxy test reached\r\nContent-Length: 0\r\n\r\n');
+      return;
+    }
     const upstream = connect(target.address().port, '127.0.0.1', () => {
       socket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
       upstream.write(head);
@@ -85,13 +90,28 @@ test('downloader honors Electron proxy dispatcher for downloads', async () => {
   });
   await new Promise(resolve => target.listen(0, '127.0.0.1', resolve));
   await new Promise(resolve => proxy.listen(0, '127.0.0.1', resolve));
-  const agent = new EnvHttpProxyAgent({ httpProxy: `http://127.0.0.1:${proxy.address().port}`, noProxy: '' });
   try {
-    await boundedDownloader((url, options) => fetch(url, { ...options, dispatcher: agent }))
-      .download('http://electron.invalid/archive', join(root, 'archive'));
-    assert.equal(tunnels, 1);
+    const proxyURL = `http://127.0.0.1:${proxy.address().port}`;
+    for (const name of ['HTTP_PROXY', 'http_proxy']) {
+      const before = tunnels;
+      await createElectronDownloader(electronRequire, { [name]: proxyURL })
+        .download('http://electron.invalid/redirect', join(root, 'archive'));
+      assert.ok(tunnels > before, name);
+      assert.equal(readFileSync(join(root, 'archive'), 'utf8'), 'proxied archive');
+    }
+    for (const name of ['HTTPS_PROXY', 'https_proxy']) {
+      const before = tunnels;
+      await assert.rejects(createElectronDownloader(electronRequire, { [name]: proxyURL })
+        .download('https://electron.invalid/archive', join(root, 'archive')), /fetch failed/);
+      assert.ok(tunnels > before, `${name} reaches the proxy for HTTPS`);
+    }
+    for (const name of ['NO_PROXY', 'no_proxy']) {
+      const before = tunnels;
+      await createElectronDownloader(electronRequire, { HTTP_PROXY: proxyURL, [name]: '127.0.0.1' })
+        .download(`http://127.0.0.1:${target.address().port}/archive`, join(root, 'archive'));
+      assert.equal(tunnels, before, name);
+    }
   } finally {
-    await agent.destroy();
     await new Promise(resolve => proxy.close(resolve));
     target.closeAllConnections();
     await new Promise(resolve => target.close(resolve));
@@ -100,15 +120,58 @@ test('downloader honors Electron proxy dispatcher for downloads', async () => {
 });
 
 test('official, China and explicit Electron mirrors resolve the correct version directory', () => {
-  assert.deepEqual(electronDownloadOptions('42.11.1', 'x64', {}).mirrorOptions,
+  const mirrorOptions = env => {
+    const { resolveAssetURL, ...options } = electronDownloadOptions('42.11.1', 'x64', env).mirrorOptions;
+    return options;
+  };
+  assert.deepEqual(mirrorOptions({}),
     { mirror: 'https://github.com/electron/electron/releases/download/', customDir: 'v42.11.1' });
-  assert.deepEqual(electronDownloadOptions('42.11.1', 'x64', { PILOTDECK_DESKTOP_DOWNLOAD_MIRROR: 'china' }).mirrorOptions,
+  assert.deepEqual(mirrorOptions({ PILOTDECK_DESKTOP_DOWNLOAD_MIRROR: 'china' }),
     { mirror: 'https://cdn.npmmirror.com/binaries/electron/', customDir: '{{ version }}' });
-  const options = electronDownloadOptions('42.11.1', 'arm64', {
+  const options = mirrorOptions({
     PILOTDECK_DESKTOP_DOWNLOAD_MIRROR: 'china', ELECTRON_MIRROR: 'https://example.test', ELECTRON_CUSTOM_DIR: 'release',
   });
-  assert.deepEqual(options.mirrorOptions, { mirror: 'https://example.test/', customDir: 'release' });
+  assert.deepEqual(options, { mirror: 'https://example.test/', customDir: 'release' });
   assert.deepEqual(downloadTimeouts, { connect: 15000, socket: 60000, request: 900000 });
+});
+
+test('actual Electron URL resolution keeps mirror and directory configuration together', async () => {
+  const require = createRequire(import.meta.url);
+  const electronRequire = createRequire(require.resolve('electron/package.json'));
+  const { getArtifactRemoteURL, getArtifactVersion } = await import(pathToFileURL(join(dirname(electronRequire.resolve('@electron/get')), 'artifact-utils.js')));
+  const cases = [
+    [{}, 'https://github.com/electron/electron/releases/download/v42.11.1/'],
+    [{ PILOTDECK_DESKTOP_DOWNLOAD_MIRROR: 'china' }, 'https://cdn.npmmirror.com/binaries/electron/42.11.1/'],
+    [{ ELECTRON_MIRROR: 'https://example.test' }, 'https://example.test/v42.11.1/'],
+    [{ npm_config_electron_mirror: 'https://example.test/releases/' }, 'https://example.test/releases/v42.11.1/'],
+    [{ NPM_CONFIG_ELECTRON_MIRROR: 'https://example.test/releases/' }, 'https://example.test/releases/v42.11.1/'],
+    [{ npm_package_config_electron_mirror: 'https://example.test/releases/' }, 'https://example.test/releases/v42.11.1/'],
+    [{ npm_config_electron_mirror: 'https://example.test/', ELECTRON_MIRROR: 'https://cdn.npmmirror.com/binaries/electron/' }, 'https://example.test/v42.11.1/'],
+    [{ npm_config_electron_mirror: 'https://cdn.npmmirror.com/binaries/electron/', ELECTRON_MIRROR: 'https://example.test/' }, 'https://cdn.npmmirror.com/binaries/electron/42.11.1/'],
+    [{ ELECTRON_MIRROR: 'https://example.test/npmmirror.com/' }, 'https://example.test/npmmirror.com/v42.11.1/'],
+    [{ ELECTRON_MIRROR: 'https://example.test/', npm_config_electron_custom_dir: 'custom/{{ version }}' }, 'https://example.test/custom/42.11.1/'],
+  ];
+  const previous = { ...process.env };
+  try {
+    for (const key of Object.keys(process.env)) {
+      if (/electron.*(?:mirror|custom)/i.test(key)) delete process.env[key];
+    }
+    for (const [settings, prefix] of cases) {
+      for (const china of [false, true]) {
+        const env = { ...(china ? { PILOTDECK_DESKTOP_DOWNLOAD_MIRROR: 'china' } : {}), ...settings };
+        Object.assign(process.env, env);
+        const options = electronDownloadOptions('42.11.1', 'x64', env);
+        options.version = getArtifactVersion(options);
+        const expected = china && !Object.keys(settings).length
+          ? 'https://cdn.npmmirror.com/binaries/electron/42.11.1/' : prefix;
+        assert.equal(await getArtifactRemoteURL(options), `${expected}electron-v42.11.1-linux-x64.zip`, JSON.stringify(env));
+        for (const key of Object.keys(env)) delete process.env[key];
+      }
+    }
+  } finally {
+    for (const key of Object.keys(process.env)) if (!(key in previous)) delete process.env[key];
+    Object.assign(process.env, previous);
+  }
 });
 
 test('CLI exits unsuccessfully when preparation fails', () => {
