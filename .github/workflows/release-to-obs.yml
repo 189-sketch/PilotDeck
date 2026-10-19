@@ -1,9 +1,6 @@
 name: Sync Latest Release to OBS
 
 on:
-  push:
-    branches: [codex/release-to-obs]
-    paths: [.github/workflows/release-to-obs.yml]
   schedule:
     # 03:30 Asia/Shanghai (GitHub cron is UTC).
     - cron: "30 19 * * *"
