@@ -78,7 +78,7 @@ def main():
             raise RuntimeError(f"OBS operation failed: {' '.join(args[:2])} (exit {result.returncode})")
         return result.stdout
 
-    aws("configure", "set", "default.s3.addressing_style", "path")
+    aws("configure", "set", "default.s3.addressing_style", "virtual")
     endpoint = ["--endpoint-url", os.environ["OBS_ENDPOINT"]]
     aws("s3", "sync", "release-assets/", f"s3://{bucket}/{prefix}", "--only-show-errors", *endpoint)
     objects = json.loads(aws("s3api", "list-objects-v2", "--bucket", bucket,
