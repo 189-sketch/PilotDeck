@@ -24,6 +24,8 @@ jobs:
       OBS_ENDPOINT: https://obs.cn-north-4.myhuaweicloud.com
       AWS_DEFAULT_REGION: cn-north-4
       AWS_EC2_METADATA_DISABLED: "true"
+      AWS_REQUEST_CHECKSUM_CALCULATION: when_required
+      AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
     steps:
       - uses: actions/checkout@v4
         with:
