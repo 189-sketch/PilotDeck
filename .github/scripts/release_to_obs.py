@@ -1,9 +1,11 @@
 """Sync release assets with broker credentials kept in process memory only."""
 
 import json
+import hashlib
 import os
 import subprocess
 import time
+import tempfile
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone, timedelta
@@ -56,24 +58,26 @@ def main():
     expected = {prefix + asset["name"]: asset["size"] for asset in assets}
     if not expected:
         raise RuntimeError("Release has no assets")
+    hashes = local_hashes(assets)
     auth = credentials(token)
-    deadline = time.monotonic() + 50 * 60
+    deadline = upload_deadline(auth["expiration"])
     env = dict(os.environ)
     env.pop("OBS_CREDENTIALS_BEARER_TOKEN", None)
     env.update(AWS_ACCESS_KEY_ID=auth["access_key_id"],
                AWS_SECRET_ACCESS_KEY=auth["secret_access_key"],
                AWS_SESSION_TOKEN=auth["security_token"])
 
-    def aws(*args, data=None):
+    def aws(*args, data=None, output=None):
         # Capture output so credential-bearing service errors cannot enter Actions logs.
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            raise RuntimeError("OBS upload and verification exceeded 50 minutes")
+            raise RuntimeError("OBS upload and verification deadline reached")
         try:
-            result = subprocess.run(["aws", *args], env=env, capture_output=True,
-                                    text=True, input=data, timeout=remaining)
+            result = subprocess.run(["aws", *args], env=env, stdout=output or subprocess.PIPE,
+                                    stderr=subprocess.PIPE, text=output is None,
+                                    input=data, timeout=remaining)
         except subprocess.TimeoutExpired:
-            raise RuntimeError("OBS upload and verification exceeded 50 minutes") from None
+            raise RuntimeError("OBS upload and verification deadline reached") from None
         if result.returncode:
             raise RuntimeError(f"OBS operation failed: {' '.join(args[:2])} (exit {result.returncode})")
         return result.stdout
@@ -86,6 +90,15 @@ def main():
     actual = {obj["Key"]: obj["Size"] for obj in objects.get("Contents", [])}
     if actual != expected:
         raise RuntimeError("OBS object names or sizes differ from the resolved release")
+    for name, digest in hashes.items():
+        with tempfile.TemporaryFile() as downloaded:
+            aws("s3", "cp", f"s3://{bucket}/{prefix}{name}", "-",
+                "--only-show-errors", *endpoint, output=downloaded)
+            downloaded.seek(0)
+            if stream_digest(downloaded) != digest:
+                raise RuntimeError("OBS object content differs from the resolved release")
+        if time.monotonic() >= deadline:
+            raise RuntimeError("OBS upload and verification deadline reached")
     print(f"Verified {len(expected)} OBS objects")
     release = json.loads(Path("release.json").read_text())
     base = f"https://{bucket}.obs.cn-north-4.myhuaweicloud.com/"
@@ -104,6 +117,52 @@ def main():
     if published != json.loads(manifest):
         raise RuntimeError("Published latest manifest differs from the verified release")
     print("Published and verified PilotDeck/latest.json")
+
+
+def stream_digest(stream):
+    digest = hashlib.sha256()
+    for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+        digest.update(chunk)
+    return digest.hexdigest()
+
+
+def local_hashes(assets):
+    root = Path("release-assets")
+    hashes = {}
+    for asset in assets:
+        name = asset["name"]
+        if not name or Path(name).name != name or name in (".", "..") or name in hashes:
+            raise RuntimeError("Invalid or duplicate release asset name")
+        path = root / name
+        if path.is_symlink() or path.stat().st_size != asset["size"]:
+            raise RuntimeError("Downloaded release asset size differs")
+        with path.open("rb") as stream:
+            hashes[name] = stream_digest(stream)
+        if asset.get("digest") and asset["digest"] != "sha256:" + hashes[name]:
+            raise RuntimeError("Downloaded asset differs from GitHub digest")
+    manifest = json.loads((root / "release.json").read_text())
+    release = json.loads(Path("release.json").read_text())
+    if manifest.get("tag") != release["tag_name"]:
+        raise RuntimeError("Release manifest tag differs")
+    records = manifest.get("assets", [])
+    if len({item["name"] for item in records}) != len(records):
+        raise RuntimeError("Duplicate release manifest entry")
+    expected_names = set(hashes) - {"release.json", "SHA256SUMS.txt"}
+    if {item["name"] for item in records} != expected_names:
+        raise RuntimeError("Release manifest asset coverage differs")
+    sizes = {item["name"]: item["size"] for item in assets}
+    for item in records:
+        if item["sha256"] != hashes[item["name"]] or item["size"] != sizes[item["name"]]:
+            raise RuntimeError("Downloaded asset differs from release manifest")
+    return hashes
+
+
+def upload_deadline(expiration):
+    expires = datetime.fromisoformat(expiration.replace("Z", "+00:00"))
+    remaining = (expires - datetime.now(timezone.utc)).total_seconds() - 120
+    if remaining <= 0:
+        raise RuntimeError("Insufficient credential lifetime")
+    return time.monotonic() + min(50 * 60, remaining)
 
 
 if __name__ == "__main__":

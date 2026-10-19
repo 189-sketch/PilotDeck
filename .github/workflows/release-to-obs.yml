@@ -15,6 +15,8 @@ concurrency:
 
 jobs:
   sync:
+    if: github.ref == 'refs/heads/main'
+    environment: obs-release
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
@@ -29,7 +31,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: main
           persist-credentials: false
+
+      - name: Test OBS synchronization safeguards
+        run: python3 -m unittest discover -s .github/scripts -p 'test_release_to_obs.py'
 
       - name: Check credentials
         env:
