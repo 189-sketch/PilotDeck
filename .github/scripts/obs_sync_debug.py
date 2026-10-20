@@ -74,12 +74,12 @@ def credential_lifetime(auth):
     return remaining
 
 
-def credentials(token, route):
+def credentials(token, route, session_name="pilotdeck-debug"):
     if not token or route != "n00069-minicpm-5-0-pilotdeck":
         raise RuntimeError("Configured desktop token and PilotDeck route required")
     request = urllib.request.Request(
         "https://tempaksk.modelbest.cn/v1/credentials",
-        data=json.dumps({"route": route, "session_name": "pilotdeck-debug"}).encode(),
+        data=json.dumps({"route": route, "session_name": session_name}).encode(),
         headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"},
         method="POST",
     )
@@ -108,7 +108,7 @@ class OperationFailure(RuntimeError):
 
 class AWS:
     def __init__(self, auth, minutes=15, workers=1, heartbeat=30, object_seconds=300):
-        if minutes not in (15, 45) or not 1 <= workers <= 4:
+        if minutes not in (15, 45, 50) or not 1 <= workers <= 4:
             raise RuntimeError("Unsupported diagnostic budget or concurrency")
         self.deadline = time.monotonic() + min(minutes * 60, 50 * 60, credential_lifetime(auth) - 120)
         self.heartbeat, self.object_seconds, self.workers = heartbeat, object_seconds, workers
