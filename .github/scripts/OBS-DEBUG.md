@@ -1,5 +1,16 @@
 # Isolated OBS sync diagnosis
 
+## Current credential override (supersedes provisioning and denial-probe sections below)
+
+The user explicitly authorized the desktop .env OBS_STS_TOKEN and OBS_STS_ROUTE.
+The debug Environment now uses those existing credentials. They authorize
+PilotDeck/, so isolation is enforced by fixed PilotDeck/_debug/<tag>/<run-id>/
+paths, NOT by cloud permissions. No production denial probe is performed.
+Review the exact commit before approving the job: branch code can read this
+credential after approval. No production latest pointer or schedule is restored.
+The Environment reviewer, no-self-review and no-admin-bypass protections remain.
+OBS_DEBUG_ENABLED enables live tests after configuration, not new provisioning.
+
 This branch does not restore the production workflow. Only pushes to
 `codex/obs-sync-debug` start the debug workflow; there is no schedule or dispatch.
 The tests job is credential-free. Until repository variable `OBS_DEBUG_ENABLED`

@@ -15,7 +15,7 @@ import urllib.request
 from datetime import datetime, timezone
 
 BUCKET = "n00069-minicpm-5-0"
-ROOT = "PilotDeck-debug/"
+ROOT = "PilotDeck/_debug/"
 ENDPOINT = "https://obs.cn-north-4.myhuaweicloud.com"
 
 
@@ -75,8 +75,8 @@ def credential_lifetime(auth):
 
 
 def credentials(token, route):
-    if not token or not route or route == "n00069-minicpm-5-0-pilotdeck":
-        raise RuntimeError("Independent debug token and route required")
+    if not token or route != "n00069-minicpm-5-0-pilotdeck":
+        raise RuntimeError("Configured desktop token and PilotDeck route required")
     request = urllib.request.Request(
         "https://tempaksk.modelbest.cn/v1/credentials",
         data=json.dumps({"route": route, "session_name": "pilotdeck-debug"}).encode(),
@@ -94,8 +94,8 @@ def credentials(token, route):
     if not isinstance(auth, dict) or any(not isinstance(auth.get(key), str) or not auth[key]
                                            for key in ("access_key_id", "secret_access_key", "security_token")):
         raise RuntimeError("Broker omitted credentials")
-    if auth.get("bucket") != BUCKET or auth.get("object_prefix") != ROOT:
-        raise RuntimeError("Broker scope must be exactly PilotDeck-debug/")
+    if auth.get("bucket") != BUCKET or auth.get("object_prefix") != "PilotDeck/":
+        raise RuntimeError("Broker scope must be exactly PilotDeck/")
     log("broker-complete", remaining_seconds=round(credential_lifetime(auth)))
     return auth
 
@@ -181,7 +181,7 @@ def s3(*args):
 
 
 def require_debug_prefix(prefix):
-    if not re.fullmatch(r"PilotDeck-debug/v[A-Za-z0-9._-]{1,100}/[0-9]+/", prefix):
+    if not re.fullmatch(r"PilotDeck/_debug/v[A-Za-z0-9._-]{1,100}/[0-9]+/", prefix):
         raise RuntimeError("Only a run-isolated debug prefix is allowed")
 
 
@@ -227,18 +227,8 @@ def verify_all(aws, prefix, hashes, sizes):
 
 def permission_smoke(aws, prefix, directory):
     require_debug_prefix(prefix)
-    # The deliberate forbidden write is tiny; only explicit AccessDenied is accepted.
     smoke = directory / "permission-probe.txt"
     smoke.write_bytes(b"pilotdeck isolated debug permission probe\n")
-    try:
-        aws.run("production-denial-probe", s3("s3", "cp", str(smoke),
-                f"s3://{BUCKET}/PilotDeck/debug-denial-probe/{prefix.split('/')[-2]}.txt", "--only-show-errors"))
-    except OperationFailure as error:
-        if error.category != "service" or error.code != "AccessDenied":
-            raise RuntimeError("Production denial probe inconclusive") from None
-        log("production-scope-denied")
-    else:
-        raise RuntimeError("Debug credentials can write production prefix; stop and revoke them")
     key = prefix + "_smoke/permission-probe.txt"
     aws.run("smoke-upload", s3("s3", "cp", str(smoke), f"s3://{BUCKET}/{key}", "--only-show-errors"))
     with smoke.open("rb") as stream:

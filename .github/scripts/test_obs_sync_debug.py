@@ -23,7 +23,7 @@ spec.loader.exec_module(debug)
 def auth(minutes=60):
     return {"access_key_id": "test-ak", "secret_access_key": "test-sk", "security_token": "test-st",
             "expiration": (datetime.now(timezone.utc) + timedelta(minutes=minutes)).isoformat(),
-            "bucket": debug.BUCKET, "object_prefix": debug.ROOT}
+            "bucket": debug.BUCKET, "object_prefix": "PilotDeck/"}
 
 
 class FakeAWS:
@@ -95,7 +95,7 @@ class DiagnosticTests(unittest.TestCase):
     def test_serial_and_concurrent_success(self):
         for workers in (1, 4):
             aws = FakeAWS(dict(self.files), workers=workers)
-            debug.sync_release(aws, "PilotDeck-debug/v1/1/", self.directory, self.release, self.hashes)
+            debug.sync_release(aws, "PilotDeck/_debug/v1/1/", self.directory, self.release, self.hashes)
             self.assertIn("publish-debug-latest", aws.calls)
             self.assertEqual(aws.peak, min(workers, len(self.files)))
 
@@ -103,34 +103,34 @@ class DiagnosticTests(unittest.TestCase):
         for corrupt, stage in ((True, None), (False, "upload"), (False, "readback")):
             aws = FakeAWS(dict(self.files), workers=4, corrupt=corrupt, failure=stage)
             with self.assertRaises(RuntimeError):
-                debug.sync_release(aws, "PilotDeck-debug/v1/1/", self.directory, self.release, self.hashes)
+                debug.sync_release(aws, "PilotDeck/_debug/v1/1/", self.directory, self.release, self.hashes)
             self.assertNotIn("publish-debug-latest", aws.calls)
 
     def test_same_path_repeat_has_no_extra_release_keys(self):
         aws = FakeAWS(dict(self.files))
         for _ in range(2):
-            debug.sync_release(aws, "PilotDeck-debug/v1/1/", self.directory, self.release, self.hashes)
+            debug.sync_release(aws, "PilotDeck/_debug/v1/1/", self.directory, self.release, self.hashes)
         self.assertEqual(set(aws.files), set(self.files) | {"latest.json"})
 
     def test_credentials_require_debug_scope(self):
         with patch.object(debug.urllib.request, "urlopen", return_value=io.BytesIO(json.dumps(auth()).encode())):
-            self.assertEqual(debug.credentials("debug-token", "debug-route")["object_prefix"], debug.ROOT)
-        for scope in ("PilotDeck/", "", "PilotDeck-debug/sub/"):
+            self.assertEqual(debug.credentials("debug-token", "n00069-minicpm-5-0-pilotdeck")["object_prefix"], "PilotDeck/")
+        for scope in ("PilotDeck-debug/", "", "PilotDeck/_debug/sub/"):
             value = auth()
             value["object_prefix"] = scope
             with patch.object(debug.urllib.request, "urlopen", return_value=io.BytesIO(json.dumps(value).encode())):
                 with self.assertRaisesRegex(RuntimeError, "scope"):
-                    debug.credentials("debug-token", "debug-route")
-        with self.assertRaisesRegex(RuntimeError, "Independent"):
+                    debug.credentials("debug-token", "n00069-minicpm-5-0-pilotdeck")
+        with self.assertRaisesRegex(RuntimeError, "Configured"):
             debug.credentials("", "")
-        with self.assertRaisesRegex(RuntimeError, "Independent"):
-            debug.credentials("token", "n00069-minicpm-5-0-pilotdeck")
+        with self.assertRaisesRegex(RuntimeError, "Configured"):
+            debug.credentials("token", "unknown-route")
 
     def test_broker_denied_and_short_lifetime(self):
         error = debug.urllib.error.HTTPError("https://example.test", 403, "denied", {}, None)
         with patch.object(debug.urllib.request, "urlopen", side_effect=error):
             with self.assertRaisesRegex(RuntimeError, "HTTP 403"):
-                debug.credentials("token", "debug-route")
+                debug.credentials("token", "n00069-minicpm-5-0-pilotdeck")
         with self.assertRaisesRegex(RuntimeError, "five minutes"):
             debug.AWS(auth(4))
 
@@ -160,7 +160,7 @@ class DiagnosticTests(unittest.TestCase):
             popen.assert_not_called()
 
     def test_production_or_unisolated_destinations_rejected(self):
-        for prefix in ("PilotDeck/v1/123/", "PilotDeck-debug/", "PilotDeck-debug/v1/../"):
+        for prefix in ("PilotDeck/v1/123/", "PilotDeck/_debug/", "PilotDeck/_debug/v1/../"):
             aws = FakeAWS(dict(self.files))
             with self.assertRaisesRegex(RuntimeError, "debug prefix"):
                 debug.sync_release(aws, prefix, self.directory, self.release, self.hashes)
@@ -182,22 +182,12 @@ class DiagnosticTests(unittest.TestCase):
                 future.result(timeout=3)
         self.assertEqual(aws.processes, set())
 
-    def test_only_explicit_denial_passes_permission_probe(self):
-        for code, should_pass in (("AccessDenied", True), ("InvalidAccessKeyId", False)):
-            aws = FakeAWS({"permission-probe.txt": b"pilotdeck isolated debug permission probe\n"})
-            original = aws.run
-            def run(stage, args, **kwargs):
-                if stage == "production-denial-probe":
-                    raise debug.OperationFailure(stage, "service", code)
-                return original(stage, args, **kwargs)
-            aws.run = run
-            if should_pass:
-                debug.permission_smoke(aws, "PilotDeck-debug/v1/123/", self.directory)
-            else:
-                with self.assertRaisesRegex(RuntimeError, "inconclusive"):
-                    debug.permission_smoke(aws, "PilotDeck-debug/v1/123/", self.directory)
-        with self.assertRaisesRegex(RuntimeError, "revoke"):
-            debug.permission_smoke(FakeAWS({}), "PilotDeck-debug/v1/123/", self.directory)
+    def test_smoke_uses_only_debug_directory(self):
+        aws = FakeAWS({"permission-probe.txt": b"pilotdeck isolated debug permission probe\n"})
+        debug.permission_smoke(aws, "PilotDeck/_debug/v1/123/", self.directory)
+        self.assertEqual(aws.calls, ["smoke-upload", "readback"])
+        with self.assertRaisesRegex(RuntimeError, "debug prefix"):
+            debug.permission_smoke(aws, "PilotDeck/v1/123/", self.directory)
 
     def test_stderr_is_redacted_but_service_code_is_visible(self):
         aws = debug.AWS(auth())

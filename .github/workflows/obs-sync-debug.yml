@@ -51,8 +51,8 @@ jobs:
             echo 'live_ready=true' >> "$GITHUB_OUTPUT"
           else
             echo 'live_ready=false' >> "$GITHUB_OUTPUT"
-            echo '::warning::Live OBS diagnostics blocked: independent debug route/token must be provisioned before setting OBS_DEBUG_ENABLED=true.'
-            echo 'Live OBS test NOT RUN. Independent debug credential provisioning required.' >> "$GITHUB_STEP_SUMMARY"
+            echo '::warning::Live OBS diagnostics disabled: configure the reviewed debug Environment before setting OBS_DEBUG_ENABLED=true.'
+            echo 'Live OBS test NOT RUN. Debug Environment configuration required.' >> "$GITHUB_STEP_SUMMARY"
           fi
 
   live:
