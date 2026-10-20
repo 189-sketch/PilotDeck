@@ -1,0 +1,64 @@
+# Isolated OBS sync diagnosis
+
+This branch does not restore the production workflow. Only pushes to
+`codex/obs-sync-debug` start the debug workflow; there is no schedule or dispatch.
+The tests job is credential-free. Until repository variable `OBS_DEBUG_ENABLED`
+is `true`, it explicitly reports that live acceptance has NOT run and skips it.
+
+## Provisioning gate
+
+Ask the operator of `tempaksk.modelbest.cn` for a separate route and Bearer token:
+bucket `n00069-minicpm-5-0`, exact prefix `PilotDeck-debug/`, List/Get/Put and
+multipart-upload permissions, one-hour sessions. The role must not write
+`PilotDeck/`. Do not reuse the production route or token. Provisioning requires
+the project's ERP code and the internal requester's identity if requested by
+the operator; neither is inferred by this script.
+
+The `obs-release-debug` Environment allows only branch `codex/obs-sync-debug`,
+requires Gucc111's review, prohibits self-review, and disables admin bypass.
+After provisioning, put the token in Environment Secret `OBS_DEBUG_BEARER_TOKEN`
+and route in Environment Variable `OBS_DEBUG_ROUTE`. No short-lived credentials
+are saved as secrets. Set repository variable `OBS_DEBUG_ENABLED=true` only after
+both exist; push the branch to request a reviewed live run. Production Environment
+and secrets remain unchanged.
+
+## Diagnostic behavior
+
+The tests job freezes the current latest formal release JSON as an artifact. The
+live job downloads that pinned release and validates local files before requesting
+credentials. Returned credential scope must exactly match `PilotDeck-debug/`.
+
+The first diagnostic uses serial readback, a five-minute per-object limit and a
+shared fifteen-minute OBS budget (also bounded by credential expiry minus two
+minutes). Each operation logs start/end, file name, byte count and elapsed time;
+every thirty seconds it emits a heartbeat. Raw AWS stderr and credentials are not
+logged; failures report only a category and allowlisted AWS error-code format.
+
+A tiny write to `PilotDeck/debug-denial-probe/<run-id>.txt` must return explicit
+AccessDenied before any full upload. If unexpectedly accepted, stop, revoke the
+debug credentials and ask the operator to remove that probe object. No production
+latest pointer is touched. Failed network/authentication is not proof of denial.
+
+A small debug upload/readback precedes the full sync. Artifacts are written to
+`PilotDeck-debug/<tag>/<run-id>/`. The same path is synced twice in one run to
+exercise idempotence; smoke objects and the isolated latest.json are excluded
+from the exact release-object listing check. Every release object is read back
+and hashed before publishing the isolated latest.json, which is also read back.
+No delete option is used. Diagnostic logs are retained as artifacts for seven days.
+
+If the first real run proves readback is slow, raise the AWS constructor's worker
+count to four and budget to 45 minutes in a reviewed branch commit. Concurrent
+verification is tested but deliberately disabled until live evidence warrants
+it. If upload is slow, implement and test bounded per-object upload separately.
+Do not increase budget or change concurrency based only on the old generic timeout.
+
+Live acceptance requires full content checks and same-path repeat, with each full
+sync under 45 minutes. Test success alone or a green workflow with the live job
+skipped is not live acceptance. Preserve isolated objects to diagnose failures.
+Only prepare a separate production restoration PR after full acceptance; do not
+merge this debug workflow or enable production scheduling.
+
+```sh
+python3 -m unittest discover -s .github/scripts -p 'test_obs_sync_debug.py'
+actionlint .github/workflows/obs-sync-debug.yml
+```
