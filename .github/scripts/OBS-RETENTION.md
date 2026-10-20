@@ -28,7 +28,14 @@ The exact planned object keys and sizes are retained as retention-plan.json for
 30 days. Initial rollout must review this artifact before deleting release assets.
 This PR does not restore the reverted production release sync or change latest.
 
-The isolated debug workflow has a separate delete-check job. It creates exactly
+Real deletion acceptance lives in the independent obs-delete-check.yml workflow,
+not in the regular upload/readback debug workflow. It is disabled by default:
+push runs require repository variable OBS_DELETE_CHECK_ENABLED=true. Before this
+workflow reaches the default branch, opt in by setting that variable, pushing the
+exact codex/obs-sync-debug branch, then setting the variable back to false.
+Once dispatch is available, manual runs must also target that exact branch.
+Skipped acceptance means not tested, never deletion permission granted. Enabled
+acceptance still fails on AccessDenied; errors are not ignored. It creates exactly
 two small objects under PilotDeck/_debug/retention-delete/<run_id>/, confirms
 their names and sizes, calls the same batch deletion helper as production
 retention, and lists the prefix again to confirm absence. Existing objects cause
@@ -48,5 +55,5 @@ Validation:
 
 ```sh
 python3 -m unittest discover -s .github/scripts -p 'test_obs*retention*.py'
-actionlint .github/workflows/obs-release-retention.yml .github/workflows/obs-sync-debug.yml
+actionlint .github/workflows/obs-release-retention.yml .github/workflows/obs-sync-debug.yml .github/workflows/obs-delete-check.yml
 ```
