@@ -110,6 +110,20 @@ class Client:
         return self.call("s3", "cp", f"s3://{BUCKET}/{LATEST}", "-", "--only-show-errors")["tag"]
 
 
+def delete_batch(client, keys):
+    if not keys or len(keys) > 1000 or len(set(keys)) != len(keys):
+        raise RuntimeError("Invalid deletion batch")
+    result = client.call("s3api", "delete-objects", "--bucket", BUCKET, "--delete",
+                         json.dumps({"Objects": [{"Key": key} for key in keys], "Quiet": False}))
+    deleted = [item["Key"] for item in result.get("Deleted", [])]
+    if result.get("Errors") or len(deleted) != len(keys) or set(deleted) != set(keys):
+        codes = sorted({item.get("Code", "unknown") for item in result.get("Errors", [])})
+        safe_codes = [code for code in codes if re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", code)]
+        raise RuntimeError("OBS did not confirm all requested deletions" +
+                           (": " + ",".join(safe_codes) if safe_codes else ""))
+    return {"deleted": deleted, "errors": []}
+
+
 def execute(client, report):
     keys = [item["key"] for group in report["remove"] for item in group["objects"]]
     for offset in range(0, len(keys), 1000):
@@ -120,10 +134,7 @@ def execute(client, report):
             match = VERSION.fullmatch(key)
             if not match or match[1] == report["latest_tag"]:
                 raise RuntimeError("Invalid cleanup target")
-        result = client.call("s3api", "delete-objects", "--bucket", BUCKET, "--delete",
-                             json.dumps({"Objects": [{"Key": key} for key in batch], "Quiet": False}))
-        if result.get("Errors") or {item["Key"] for item in result.get("Deleted", [])} != set(batch):
-            raise RuntimeError("OBS did not confirm all requested deletions")
+        delete_batch(client, batch)
         print(f"Deleted {len(batch)} obsolete release objects", flush=True)
 
 
