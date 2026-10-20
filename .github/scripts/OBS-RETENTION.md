@@ -5,7 +5,11 @@ versions. Always retain the version referenced by PilotDeck/latest.json, even
 when older than both limits. If any object in an older version was recently
 uploaded, retain that whole version for 30 days from its newest object timestamp.
 
-Only direct objects inside PilotDeck/vYYYY.MM.DD/ participate. The manifest,
+Only direct objects inside PilotDeck/vYYYY.MM.DD/ or
+PilotDeck/vYYYY.MM.DD-rN/ participate. Revisions count as distinct versions;
+versions sort by date, then numeric revision (the base tag precedes revisions).
+The tag date and newest object timestamp still determine the 30-day window.
+The manifest,
 debug files, access logs, legacy directories and unknown prefixes are excluded.
 Objects in an expired version directory are removed together, including its
 update metadata, so partial obsolete releases are not advertised as usable.

@@ -14,7 +14,7 @@ import urllib.request
 BUCKET = "n00069-minicpm-5-0"
 PREFIX = "PilotDeck/"
 LATEST = PREFIX + "latest.json"
-VERSION = re.compile(r"PilotDeck/(v\d{4}\.\d{2}\.\d{2})/[^/]+$")
+VERSION = re.compile(r"PilotDeck/(v(?P<date>\d{4}\.\d{2}\.\d{2})(?:-r(?P<revision>[1-9]\d*))?)/[^/]+$")
 
 
 def timestamp(value):
@@ -26,6 +26,7 @@ def timestamp(value):
 
 def plan(objects, latest_tag, now):
     groups = {}
+    version_order = {}
     seen = set()
     for item in objects:
         key = item["Key"]
@@ -36,13 +37,14 @@ def plan(objects, latest_tag, now):
         if not match:
             continue
         tag = match[1]
-        day = datetime.strptime(tag, "v%Y.%m.%d").replace(tzinfo=timezone.utc)
+        day = datetime.strptime(match["date"], "%Y.%m.%d").replace(tzinfo=timezone.utc)
+        version_order[tag] = (day, int(match["revision"] or 0))
         group = groups.setdefault(tag, {"tag": tag, "modified": day, "objects": []})
         group["modified"] = max(group["modified"], timestamp(item["LastModified"]))
         group["objects"].append({"key": key, "bytes": item["Size"]})
     if latest_tag not in groups:
         raise RuntimeError("Latest manifest does not identify a listed release; refusing cleanup")
-    ordered = sorted(groups, reverse=True)
+    ordered = sorted(groups, key=version_order.__getitem__, reverse=True)
     protected = set(ordered[:3]) | {latest_tag}
     cutoff = now - timedelta(days=30)
     keep, remove = [], []
