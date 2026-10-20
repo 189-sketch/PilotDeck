@@ -191,12 +191,17 @@ def configure(aws, config):
 
 
 def verify_one(aws, key, expected, size):
-    with tempfile.TemporaryFile() as stream:
-        aws.run("readback", s3("s3", "cp", f"s3://{BUCKET}/{key}", "-", "--only-show-errors"),
-                output=stream, file=key.rsplit("/", 1)[-1], size=size)
-        stream.seek(0)
-        if digest(stream, aws.deadline) != expected:
-            raise RuntimeError("OBS content mismatch: " + key.rsplit("/", 1)[-1])
+    # AWS CLI 1.46.1 can deadlock streamed multipart downloads at 48 MiB.
+    # A seekable file avoids that queue and still permits full content checks.
+    with tempfile.TemporaryDirectory() as temporary:
+        path = Path(temporary) / "object"
+        aws.run("readback", s3("s3", "cp", f"s3://{BUCKET}/{key}", str(path), "--only-show-errors"),
+                file=key.rsplit("/", 1)[-1], size=size)
+        if path.stat().st_size != size:
+            raise RuntimeError("OBS readback size mismatch: " + key.rsplit("/", 1)[-1])
+        with path.open("rb") as stream:
+            if digest(stream, aws.deadline) != expected:
+                raise RuntimeError("OBS content mismatch: " + key.rsplit("/", 1)[-1])
     log("content-verified", file=key.rsplit("/", 1)[-1], bytes=size)
 
 

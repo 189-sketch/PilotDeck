@@ -6,9 +6,9 @@ The user explicitly authorized the desktop .env OBS_STS_TOKEN and OBS_STS_ROUTE.
 The debug Environment now uses those existing credentials. They authorize
 PilotDeck/, so isolation is enforced by fixed PilotDeck/_debug/<tag>/<run-id>/
 paths, NOT by cloud permissions. No production denial probe is performed.
-Review the exact commit before approving the job: branch code can read this
-credential after approval. No production latest pointer or schedule is restored.
-The Environment reviewer, no-self-review and no-admin-bypass protections remain.
+The user authorized live runs without reviewer approval on this debug branch.
+Branch code can read this credential. No production latest pointer or schedule
+is restored. The exact debug branch restriction remains enforced.
 OBS_DEBUG_ENABLED enables live tests after configuration, not new provisioning.
 
 This branch does not restore the production workflow. Only pushes to
@@ -17,11 +17,11 @@ The tests job is credential-free. Until repository variable `OBS_DEBUG_ENABLED`
 is `true`, it explicitly reports that live acceptance has NOT run and skips it.
 
 The `obs-release-debug` Environment allows only branch `codex/obs-sync-debug`,
-requires Gucc111's review, prohibits self-review, and disables admin bypass.
+has no required reviewer, and disables admin bypass.
 Put the authorized desktop token in Environment Secret `OBS_DEBUG_BEARER_TOKEN`
 and route in Environment Variable `OBS_DEBUG_ROUTE`. No short-lived credentials
 are saved as secrets. Set repository variable `OBS_DEBUG_ENABLED=true` only after
-both exist; push the branch to request a reviewed live run. Production Environment
+both exist; push the branch to start a live run. Production Environment
 and secrets remain unchanged.
 
 ## Diagnostic behavior
@@ -42,6 +42,22 @@ exercise idempotence; smoke objects and the isolated latest.json are excluded
 from the exact release-object listing check. Every release object is read back
 and hashed before publishing the isolated latest.json, which is also read back.
 No delete option is used. Diagnostic logs are retained as artifacts for seven days.
+
+## Confirmed timeout cause and fix
+
+Run 39366243600 attempt 2 uploaded all 20 v2026.10.20 assets (2,440,236,581
+bytes) in 45.24 seconds. Small readbacks completed in about one second each;
+the first 182 MB installer readback hit the five-minute object timeout.
+With the same AWS CLI 1.46.1, a local range-capable S3 fixture reproduced the
+stream download hang at exactly 48 MiB of a 64 MiB object, without OBS or network
+latency. Direct-to-file download completed all 64 MiB in 0.66 seconds.
+
+The streamed download's first-chunk callback schedules remaining chunks while
+holding an in-memory download slot; scheduling blocks on the six-chunk limit
+and prevents completion. Readback now targets a seekable temporary file instead
+of stdout, then checks size and full SHA-256. Concurrency and budgets remain
+unchanged. A real-CLI 64 MiB regression runs after CLI installation on Runner;
+the credential-free job skips only this dependency-bound integration test.
 
 If the first real run proves readback is slow, raise the AWS constructor's worker
 count to four and budget to 45 minutes in a reviewed branch commit. Concurrent

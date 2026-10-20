@@ -2,10 +2,12 @@ import concurrent.futures
 from contextlib import redirect_stdout
 from datetime import datetime, timedelta, timezone
 import hashlib
+import http.server
 import importlib.util
 import io
 import json
 import os
+import shutil
 from pathlib import Path
 import subprocess
 import sys
@@ -60,7 +62,7 @@ class FakeAWS:
                 data = self.files[name]
                 if self.corrupt and name == "app.exe":
                     data = b"X" * len(data)
-                kwargs["output"].write(data)
+                Path(args[3]).write_bytes(data)
             finally:
                 with self.lock:
                     self.active -= 1
@@ -200,6 +202,58 @@ class DiagnosticTests(unittest.TestCase):
                 aws.run("probe", [])
         self.assertNotIn("secret-token", self.output._new_target.getvalue())
         self.assertNotIn("OBS_DEBUG_BEARER_TOKEN", aws.env)
+
+    @unittest.skipUnless(shutil.which("aws"), "AWS CLI integration runs after CLI installation")
+    def test_large_readback_with_real_cli(self):
+        size = 64 * 1024 * 1024
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+
+            def do_HEAD(self):
+                self.respond(False)
+
+            def do_GET(self):
+                self.respond(True)
+
+            def respond(self, body):
+                value = self.headers.get("Range")
+                start, end = 0, size - 1
+                if value:
+                    first, last = value.removeprefix("bytes=").split("-")
+                    start, end = int(first), min(int(last) if last else size - 1, size - 1)
+                self.send_response(206 if value else 200)
+                self.send_header("Content-Length", str(end - start + 1))
+                self.send_header("ETag", '"test"')
+                self.send_header("Last-Modified", "Tue, 20 Oct 2026 00:00:00 GMT")
+                if value:
+                    self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+                self.end_headers()
+                if body:
+                    remaining = end - start + 1
+                    try:
+                        while remaining:
+                            chunk = b"x" * min(65536, remaining)
+                            self.wfile.write(chunk)
+                            remaining -= len(chunk)
+                    except OSError:
+                        pass
+
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            aws = debug.AWS(auth(), object_seconds=10)
+            config = self.directory / "aws-config"
+            config.write_text("[default]\ns3 =\n    addressing_style = path\n")
+            aws.env["AWS_CONFIG_FILE"] = str(config)
+            expected = hashlib.sha256(b"x" * size).hexdigest()
+            with patch.object(debug, "ENDPOINT", f"http://127.0.0.1:{server.server_port}"):
+                debug.verify_one(aws, "test.bin", expected, size)
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
 
 
 if __name__ == "__main__":
