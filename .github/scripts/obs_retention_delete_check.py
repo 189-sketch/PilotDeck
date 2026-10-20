@@ -34,7 +34,7 @@ def check(client, run_id, directory, report):
                           for index, key in enumerate(keys)}
         if len(uploaded) != 2 or {item["Key"]: item["Size"] for item in uploaded} != expected_sizes:
             raise RuntimeError("Test objects were not confirmed before deletion")
-        report["confirmed_objects"] = uploaded
+        report["confirmed_objects"] = [{"key": item["Key"], "bytes": item["Size"]} for item in uploaded]
         report["delete_response"] = delete_batch(client, keys)
         report["remaining_keys"] = [item["Key"] for item in listing(client, prefix)]
         if report["remaining_keys"]:

@@ -81,7 +81,7 @@ jobs:
           PY
           python3 -m venv "$RUNNER_TEMP/obs-cli"
           "$RUNNER_TEMP/obs-cli/bin/pip" install 'awscli>=1.36,<2'
-          PATH="$RUNNER_TEMP/obs-cli/bin:$PATH" python3 -m unittest discover -s .github/scripts -p 'test_obs_sync_debug.py'
+          PATH="$RUNNER_TEMP/obs-cli/bin:$PATH" python3 -m unittest discover -s .github/scripts -p 'test_obs*.py'
           echo "$RUNNER_TEMP/obs-cli/bin" >> "$GITHUB_PATH"
       - name: Isolated upload, readback and same-path repeat
         env:
@@ -128,6 +128,7 @@ jobs:
           OBS_CREDENTIALS_BEARER_TOKEN: ${{ secrets.OBS_DEBUG_BEARER_TOKEN }}
         run: python3 -u .github/scripts/obs_retention_delete_check.py
       - name: Plan production retention without deleting release assets
+        if: ${{ !cancelled() }}
         env:
           OBS_CREDENTIALS_BEARER_TOKEN: ${{ secrets.OBS_DEBUG_BEARER_TOKEN }}
         run: python3 -u .github/scripts/obs_release_retention.py
